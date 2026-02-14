@@ -22,7 +22,7 @@ class EscalationManager:
 
     # Which agents can be rerouted to for which task types
     REROUTE_MAP = {
-        "browser": ["research"],               # Browser tasks MUST stay browser-only. System agent can't handle web pages.
+        "browser": [],                         # Browser tasks MUST stay browser-only. NO rerouting — other agents can't browse.
         "coder":   ["system"],                  # If coder fails, system might handle it with raw commands
         "system":  ["coder"],                   # If system fails, coder might script it
         "research": ["browser"],               # If research fails, browser can do manual browsing

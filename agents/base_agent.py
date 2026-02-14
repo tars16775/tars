@@ -200,6 +200,37 @@ class BaseAgent(ABC):
                     # ── Terminal tool: done ──
                     if name == "done":
                         summary = inp.get("summary", "Done.")
+
+                        # Anti-hallucination: require minimum real tool usage
+                        real_tool_steps = step - 1  # subtract this done call
+                        min_steps = 2
+                        vague_summaries = [
+                            "done", "done.", "completed", "completed.",
+                            "task completed", "task completed.",
+                            "task is complete", "task is complete.",
+                        ]
+                        is_vague = (
+                            summary.strip().lower() in vague_summaries
+                            or len(summary.strip()) < 15
+                        )
+
+                        if real_tool_steps < min_steps and is_vague:
+                            # Reject — force agent to actually do work
+                            print(f"  ⚠️ [{self.agent_name}] Rejected premature done (only {real_tool_steps} real steps, vague summary)")
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tid,
+                                "content": (
+                                    f"REJECTED: You called done() without actually completing the task. "
+                                    f"You have only used {real_tool_steps} tool(s). You MUST use your tools to "
+                                    f"actually perform the task — do not just claim it is done. "
+                                    f"Start by using your tools to take real action on the task, "
+                                    f"then call done() with a SPECIFIC summary of what you actually did "
+                                    f"(include details like URLs visited, fields filled, results seen)."
+                                ),
+                            })
+                            continue
+
                         print(f"  ✅ [{self.agent_name}] Done: {summary[:200]}")
                         self._notify(f"✅ {self.agent_name} done: {summary[:500]}")
                         self._on_done(summary)

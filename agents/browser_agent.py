@@ -163,7 +163,16 @@ BROWSER_SYSTEM_PROMPT = """You are TARS Browser Agent — the world's best web a
 7. NEVER use `js` to click, fill, or modify the DOM. JS is READ-ONLY. All actions must be physical.
 8. When a page transitions (SPA), content changes without URL changing. Always `look` again.
 9. For Google/Material dropdowns: `select` with the label text (e.g., dropdown="Month" option="June").
-10. Be efficient — don't waste steps. Every action should make progress."""
+10. Be efficient — don't waste steps. Every action should make progress.
+
+## CRITICAL ANTI-HALLUCINATION RULES
+- NEVER claim you did something you didn't actually do with tools.
+- You MUST use tools to perform every action. Saying "I filled the form" without calling `type` is LYING.
+- Before calling `done`, VERIFY the result with `look` or `read` — confirm the page shows success.
+- Your `done(summary)` MUST describe SPECIFIC actions you took with SPECIFIC tools and what the page showed.
+- If you can't complete the task, call `stuck` — NEVER fabricate a success.
+- Minimum workflow: goto → look → interact → verify → done. Skipping steps = hallucination.
+- If an action returns ERROR, the action FAILED. Do not pretend it succeeded."""
 
 
 class BrowserAgent(BaseAgent):
