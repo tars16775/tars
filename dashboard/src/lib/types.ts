@@ -80,9 +80,10 @@ export interface ActionLogEntry {
 }
 
 export interface OutputLine {
-  stream: 'stdout' | 'stderr' | 'system'
+  stream: 'stdout' | 'stderr' | 'system' | 'event'
   text: string
   ts: number
+  eventType?: string
 }
 
 export interface ControlCommand {

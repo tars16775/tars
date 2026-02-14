@@ -101,6 +101,14 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
   const blockIdRef = useRef(0)
   const currentThinkRef = useRef<string | null>(null)
 
+  // Helper to append a log line
+  const appendLog = useCallback((stream: OutputLine['stream'], text: string, eventType?: string) => {
+    setOutputLog(prev => {
+      const next = [...prev, { stream, text, ts: Date.now() / 1000, eventType }]
+      return next.length > 2000 ? next.slice(-2000) : next
+    })
+  }, [])
+
   const handleEvent = useCallback((event: TarsEvent) => {
     const { type, data, timestamp } = event
     const time = new Date(timestamp).toLocaleTimeString()
@@ -116,6 +124,7 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         if (!data.connected) {
           setTarsProcess(prev => ({ ...prev, running: false, status: 'unknown' }))
         }
+        appendLog('system', data.connected ? '🔗 Mac tunnel connected' : '🔌 Mac tunnel disconnected', 'tunnel_status')
         break
 
       case 'tars_process_status':
@@ -133,10 +142,11 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
           stream: data.stream || 'stdout',
           text: data.text || '',
           ts: data.ts || Date.now() / 1000,
+          eventType: 'tars_output',
         }
         setOutputLog(prev => {
           const next = [...prev, line]
-          return next.length > 1000 ? next.slice(-1000) : next
+          return next.length > 2000 ? next.slice(-2000) : next
         })
         break
       }
@@ -146,16 +156,16 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
           stream: l.stream || 'stdout',
           text: l.text || '',
           ts: l.ts || Date.now() / 1000,
+          eventType: 'tars_output',
         }))
         setOutputLog(prev => {
           const next = [...prev, ...lines]
-          return next.length > 1000 ? next.slice(-1000) : next
+          return next.length > 2000 ? next.slice(-2000) : next
         })
         break
       }
 
       case 'command_response':
-        // Could show notification here
         break
 
       // ── Task Events ──
@@ -174,12 +184,14 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
           return [task, ...updated]
         })
         setSubsystems(s => ({ ...s, agent: 'working' }))
+        appendLog('event', `📋 New task: ${data.task}`, 'task')
         sendBrowserNotification('TARS // New Task', data.task)
         break
       }
       case 'task_completed':
         setTasks(prev => prev.map(t => t.status === 'active' ? { ...t, status: 'completed', completedAt: Date.now() } : t))
         setSubsystems(s => ({ ...s, agent: 'online' }))
+        appendLog('event', `✅ Task complete`, 'task')
         sendBrowserNotification('TARS // Task Complete', data.response?.substring(0, 100) || 'Done')
         break
 
@@ -193,6 +205,7 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         }])
         setCurrentModel(data.model || '')
         setSubsystems(s => ({ ...s, claude: 'active' }))
+        appendLog('event', `🧠 Thinking... (${data.model || 'LLM'})`, 'thinking')
         break
       }
       case 'thinking':
@@ -215,6 +228,8 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
           toolInput: data.tool_input,
           time,
         }])
+        const inputPreview = data.tool_input ? JSON.stringify(data.tool_input).substring(0, 120) : ''
+        appendLog('event', `🔧 Tool: ${data.tool_name}${inputPreview ? ' → ' + inputPreview : ''}`, 'tool')
         break
       }
       case 'tool_result': {
@@ -238,6 +253,9 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
           time,
         }])
         setSubsystems(s => ({ ...s, claude: 'idle' }))
+        const icon = data.success ? '✅' : '❌'
+        const dur = data.duration != null ? ` (${data.duration.toFixed(1)}s)` : ''
+        appendLog(data.success ? 'event' : 'stderr', `${icon} Result: ${data.tool_name}${dur} — ${String(data.content || '').substring(0, 150)}`, 'tool')
         break
       }
 
@@ -247,12 +265,14 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         setMessages(prev => [...prev, {
           id: msgIdRef.current, text: data.message, sender: 'tars', time, timestamp: Date.now(),
         }])
+        appendLog('event', `💬 iMessage sent: ${data.message.substring(0, 100)}`, 'imessage')
         break
       case 'imessage_received':
         msgIdRef.current++
         setMessages(prev => [...prev, {
           id: msgIdRef.current, text: data.message, sender: 'user', time, timestamp: Date.now(),
         }])
+        appendLog('event', `📱 iMessage received: ${data.message.substring(0, 100)}`, 'imessage')
         sendBrowserNotification('TARS // iMessage', data.message)
         break
 
@@ -263,10 +283,12 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
           total_tokens_in: prev.total_tokens_in + (data.tokens_in || 0),
           total_tokens_out: prev.total_tokens_out + (data.tokens_out || 0),
         }))
+        appendLog('event', `🤖 API call: ${data.model || 'LLM'} (${data.tokens_in || 0}→${data.tokens_out || 0} tokens)`, 'api')
         break
 
       case 'status_change':
         setSubsystems(s => ({ ...s, agent: data.status || 'online' }))
+        appendLog('system', `⚡ Status: ${data.status || 'online'}`, 'status')
         break
 
       case 'error':
@@ -274,6 +296,7 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         setThinkingBlocks(prev => [...prev, {
           id: `err-${blockIdRef.current}`, type: 'error', text: data.message || data.error || 'Unknown error',
         }])
+        appendLog('stderr', `🚨 Error: ${data.message || data.error || 'Unknown error'}`, 'error')
         break
 
       case 'stats':
@@ -287,10 +310,18 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
 
       case 'kill_switch':
         setSubsystems(s => ({ ...s, agent: 'killed' }))
+        appendLog('stderr', `🛑 KILL SWITCH ACTIVATED`, 'kill')
         sendBrowserNotification('TARS // KILLED', 'Kill switch activated')
         break
+
+      default: {
+        // Catch any unknown event types and still log them
+        const preview = JSON.stringify(data).substring(0, 150)
+        appendLog('event', `[${type}] ${preview}`, type)
+        break
+      }
     }
-  }, [])
+  }, [appendLog])
 
   // Initialize WebSocket
   useEffect(() => {

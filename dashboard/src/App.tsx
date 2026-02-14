@@ -57,11 +57,11 @@ function DashboardLayout() {
       <main className="relative z-10 flex-1 overflow-hidden">
         {activeView === 'dashboard' && (
           <div className="h-full flex flex-col">
-            {/* Desktop: 4-column layout with process control + thinking + tasks/messages */}
-            <div className="flex-1 hidden md:grid md:grid-cols-[240px_1fr_300px] gap-px bg-panel-border overflow-hidden">
+            {/* Desktop: 3-column layout */}
+            <div className="flex-1 hidden md:grid md:grid-cols-[220px_1fr_260px] gap-px bg-panel-border overflow-hidden">
               {/* Left: Process Control + Tasks */}
               <div className="bg-void-950 overflow-hidden flex flex-col">
-                <div className="h-[45%] border-b border-panel-border">
+                <div className="shrink-0 border-b border-panel-border" style={{ maxHeight: '45%' }}>
                   <ProcessControl />
                 </div>
                 <div className="flex-1 overflow-hidden">
@@ -69,34 +69,34 @@ function DashboardLayout() {
                 </div>
               </div>
 
-              {/* Center: Console Output + Thinking Stream */}
+              {/* Center: Live Activity (main) + Thinking Stream */}
               <div className="bg-void-950 overflow-hidden flex flex-col">
-                <div className="h-[45%] border-b border-panel-border relative">
+                <div className="flex-[3] overflow-hidden relative border-b border-panel-border">
                   <ConsoleOutput />
                 </div>
-                <div className="flex-1 overflow-hidden relative">
+                <div className="flex-[2] overflow-hidden relative">
                   <ThinkingStream />
                 </div>
               </div>
 
-              {/* Right: Messages */}
+              {/* Right: iMessage (conversation only) */}
               <div className="bg-void-950 overflow-hidden">
                 <MessagePanel />
               </div>
             </div>
 
-            {/* Mobile: show thinking stream only in dashboard view */}
-            <div className="flex-1 md:hidden overflow-hidden bg-void-950">
-              <div className="h-1/3 border-b border-panel-border">
+            {/* Mobile */}
+            <div className="flex-1 md:hidden overflow-hidden bg-void-950 flex flex-col">
+              <div className="shrink-0 border-b border-panel-border" style={{ maxHeight: '35%' }}>
                 <ProcessControl />
               </div>
-              <div className="h-2/3 overflow-hidden relative">
+              <div className="flex-1 overflow-hidden relative">
                 <ConsoleOutput />
               </div>
             </div>
 
             {/* Bottom: Action Log */}
-            <div className="h-44 border-t border-panel-border bg-void-950 hidden md:block overflow-hidden">
+            <div className="h-40 border-t border-panel-border bg-void-950 hidden md:block overflow-hidden">
               <ActionLog />
             </div>
           </div>
