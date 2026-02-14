@@ -34,12 +34,6 @@
   "failure_patterns": [
     {
       "task": "Go to Gmail signup (accounts.google.com/signup), fill in all fields with a creative name, use password TarsAgent2026!, complete the entire signup flow including phone verification if needed. If Gmail ",
-      "reason": "The task is too complex and the provided functions are not sufficient to complete the Gmail signup flow.",
-      "steps": 6,
-      "timestamp": "2026-02-14T14:53:19.761024"
-    },
-    {
-      "task": "Go to Gmail signup (accounts.google.com/signup), fill in all fields with a creative name, use password TarsAgent2026!, complete the entire signup flow including phone verification if needed. If Gmail ",
       "reason": "The task of creating a Gmail account is too complex and the provided functions are not sufficient to complete the signup flow. Additionally, the CAPTCHA challenge is preventing the automation of the task.",
       "steps": 6,
       "timestamp": "2026-02-14T14:56:02.487964"
@@ -151,12 +145,18 @@
       "reason": "Could not create a new email address despite trying different approaches, including filling in the email field and clicking Next. The system does not allow using the desired email address format. Multiple attempts were made with different email addresses, but all were unsuccessful.",
       "steps": 13,
       "timestamp": "2026-02-14T15:46:19.400472"
+    },
+    {
+      "task": "Create a new email account on protonmail.com, then send an email to tarsitgroup@outlook.com with the subject 'Email Creation Success' and the body 'The email account has been created successfully from",
+      "reason": "Unknown reason.",
+      "steps": 19,
+      "timestamp": "2026-02-14T16:26:07.312679"
     }
   ],
   "stats": {
-    "total_tasks": 27,
+    "total_tasks": 28,
     "successes": 5,
-    "failures": 22,
-    "total_steps": 206
+    "failures": 23,
+    "total_steps": 225
   }
 }

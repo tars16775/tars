@@ -157,7 +157,6 @@ class TARS:
         killed, msg = self.imessage_reader.check_for_kill(self.kill_words)
         if killed:
             print(f"\n  🛑 Kill switch activated: '{msg}'")
-            self.imessage_sender.send("🛑 TARS stopped. Send a new task when ready.")
             return True
         return False
 
@@ -177,10 +176,8 @@ class TARS:
             print(f"  📋 Initial task: {initial_task}\n")
             self._process_task(initial_task)
         else:
-            # No task — announce on iMessage and wait
-            self.imessage_sender.send("🤖 TARS is online and ready. What should I work on?")
-            event_bus.emit("imessage_sent", {"message": "🤖 TARS is online and ready. What should I work on?"})
-            print("  📱 Sent startup message. Waiting for instructions...\n")
+            # No task — wait for instructions (no iMessage spam)
+            print("  📱 Waiting for instructions...\n")
 
         # Main loop — keep working forever
         while self.running:
@@ -196,21 +193,20 @@ class TARS:
                     # Check kill switch
                     if any(kw.lower() in task.lower() for kw in self.kill_words):
                         print(f"  🛑 Kill command received: {task}")
-                        self.imessage_sender.send("🛑 TARS stopped. Send a new task when ready.")
                         event_bus.emit("kill_switch", {"source": "imessage"})
                         continue
 
                     # Process the task
                     self._process_task(task)
                 else:
-                    # Timed out — send a check-in
-                    self.imessage_sender.send("💤 TARS is idle. Send me a task whenever you're ready.")
+                    # Timed out — just keep waiting silently
+                    print("  💤 Still waiting for task...")
 
             except KeyboardInterrupt:
                 self._shutdown()
             except Exception as e:
                 self.logger.error(f"Loop error: {e}")
-                self.imessage_sender.send(f"⚠️ TARS encountered an error: {e}\nI'll keep running.")
+                print(f"  ⚠️ Error: {e} — continuing...")
                 time.sleep(5)
 
     def _process_task(self, task):
