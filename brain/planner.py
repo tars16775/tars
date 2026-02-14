@@ -13,7 +13,7 @@ or any OpenAI-compatible endpoint.
 
 import time
 from datetime import datetime
-from brain.llm_client import LLMClient
+from brain.llm_client import LLMClient, _parse_failed_tool_call
 from brain.prompts import TARS_SYSTEM_PROMPT, RECOVERY_PROMPT
 from brain.tools import TARS_TOOLS
 from utils.event_bus import event_bus
@@ -121,8 +121,42 @@ class TARSBrain:
                 })
 
             except Exception as e:
-                event_bus.emit("error", {"message": f"LLM API error: {e}"})
-                return f"❌ LLM API error: {e}"
+                # Try to recover from Groq tool_use_failed
+                error_str = str(e)
+                if "tool_use_failed" in error_str:
+                    recovered = _parse_failed_tool_call(e)
+                    if recovered:
+                        response = recovered
+                        call_duration = time.time() - call_start
+                        event_bus.emit("api_call", {
+                            "model": model, "tokens_in": 0,
+                            "tokens_out": 0, "duration": call_duration,
+                        })
+                        print(f"  🔧 Brain: Recovered malformed tool call from Groq")
+                    else:
+                        # Recovery failed — try non-streaming fallback
+                        try:
+                            response = self.client.create(
+                                model=model,
+                                max_tokens=4096,
+                                system=self._get_system_prompt(),
+                                tools=TARS_TOOLS,
+                                messages=self.conversation_history,
+                            )
+                            call_duration = time.time() - call_start
+                            event_bus.emit("api_call", {
+                                "model": model,
+                                "tokens_in": response.usage.input_tokens,
+                                "tokens_out": response.usage.output_tokens,
+                                "duration": call_duration,
+                            })
+                            print(f"  🔧 Brain: Non-streaming fallback succeeded")
+                        except Exception as e2:
+                            event_bus.emit("error", {"message": f"LLM API error: {e2}"})
+                            return f"❌ LLM API error: {e2}"
+                else:
+                    event_bus.emit("error", {"message": f"LLM API error: {e}"})
+                    return f"❌ LLM API error: {e}"
 
             # Process response
             assistant_content = response.content

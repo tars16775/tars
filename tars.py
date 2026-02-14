@@ -36,8 +36,10 @@ from executor import ToolExecutor
 from voice.imessage_send import IMessageSender
 from voice.imessage_read import IMessageReader
 from memory.memory_manager import MemoryManager
+from memory.agent_memory import AgentMemory
 from utils.logger import setup_logger
 from utils.event_bus import event_bus
+from utils.agent_monitor import agent_monitor
 from server import TARSServer
 
 
@@ -52,7 +54,7 @@ BANNER = """
      ██║   ██║  ██║██║  ██║███████║
      ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
 \033[0m
-  \033[90mAutonomous Mac Agent — v2.0\033[0m
+  \033[90mAutonomous Mac Agent — v3.0 Multi-Agent\033[0m
   \033[90m"Humor: 75% — Honesty: 90%"\033[0m
   \033[90mDashboard: http://localhost:8420\033[0m
 """
@@ -99,6 +101,9 @@ class TARS:
         self.memory = MemoryManager(self.config, BASE_DIR)
         print("  🧠 Memory loaded")
 
+        self.agent_memory = AgentMemory(BASE_DIR)
+        print("  🧬 Agent memory loaded")
+
         self.imessage_sender = IMessageSender(self.config)
         self.imessage_reader = IMessageReader(self.config)
         print("  📱 iMessage bridge ready")
@@ -106,10 +111,18 @@ class TARS:
         self.executor = ToolExecutor(
             self.config, self.imessage_sender, self.imessage_reader, self.memory, self.logger
         )
-        print("  🔧 Tool executor ready")
+        print("  🔧 Orchestrator executor ready")
+        print(f"     ├─ 🌐 Browser Agent")
+        print(f"     ├─ 💻 Coder Agent")
+        print(f"     ├─ ⚙️  System Agent")
+        print(f"     ├─ 🔍 Research Agent")
+        print(f"     └─ 📁 File Agent")
 
         self.brain = TARSBrain(self.config, self.executor, self.memory)
-        print("  🤖 Brain online")
+        print("  🤖 Orchestrator brain online")
+
+        self.monitor = agent_monitor
+        print("  📊 Agent monitor active")
 
         # Start dashboard server
         self.server = TARSServer(memory_manager=self.memory, tars_instance=self)
@@ -126,6 +139,13 @@ class TARS:
     def _shutdown(self, *args):
         """Graceful shutdown."""
         print("\n\n  🛑 TARS shutting down...")
+
+        # Print session summary from self-improvement engine
+        if hasattr(self.executor, 'self_improve'):
+            summary = self.executor.self_improve.get_session_summary()
+            if summary:
+                print(f"\n{summary}\n")
+
         self.running = False
         self.memory.update_context(
             f"# TARS — Last Session\n\nShutdown at {datetime.now().isoformat()}\n"

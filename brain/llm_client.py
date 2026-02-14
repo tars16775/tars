@@ -12,6 +12,8 @@ is behind the scenes.
 """
 
 import json
+import re
+import uuid
 
 # ─────────────────────────────────────────────
 #  Normalized Response Objects
@@ -101,6 +103,144 @@ def _openai_response_to_normalized(response):
     )
 
     return LLMResponse(content=blocks, stop_reason=stop_reason, usage=usage)
+
+
+# ─────────────────────────────────────────────
+#  Malformed Tool Call Recovery
+#  (Groq/Llama sometimes generates XML-style
+#   tool calls that fail validation. We parse
+#   them here and recover.)
+# ─────────────────────────────────────────────
+
+def _parse_failed_tool_call(error):
+    """
+    Parse a Groq tool_use_failed error and extract the tool call.
+
+    Groq's Llama models sometimes generate tool calls in XML format:
+        <function=goto{"url": "https://example.com"}</function>
+    or multi-param:
+        <function=type{"selector": "#email", "text": "hello"}</function>
+
+    We extract the function name and arguments, then build a proper
+    LLMResponse as if the API had returned it correctly.
+
+    Returns LLMResponse if parsed successfully, None otherwise.
+    """
+    error_str = str(error)
+
+    # Try to get failed_generation directly from the error body (OpenAI SDK)
+    failed_gen = None
+    if hasattr(error, 'body') and isinstance(error.body, dict):
+        failed_gen = error.body.get('failed_generation')
+        if not failed_gen:
+            # Sometimes nested under 'error'
+            failed_gen = error.body.get('error', {}).get('failed_generation') if isinstance(error.body.get('error'), dict) else None
+
+    # Fallback: regex extraction from error string
+    if not failed_gen:
+        fg_match = re.search(r"'failed_generation':\s*'(.+?)'\s*\}", error_str, re.DOTALL)
+        if not fg_match:
+            fg_match = re.search(r'"failed_generation":\s*"(.+?)"\s*\}', error_str, re.DOTALL)
+        if fg_match:
+            failed_gen = fg_match.group(1)
+            failed_gen = failed_gen.replace('\\"', '"').replace("\\'", "'")
+
+    # Pattern 2: Look for the XML pattern directly in the error string
+    if not failed_gen:
+        xml_match = re.search(r'<function=\w+.*?</function>', error_str)
+        if xml_match:
+            failed_gen = xml_match.group(0)
+
+    # Pattern 3: "attempted to call tool 'tool_name={"args"}'" pattern  
+    if not failed_gen:
+        tool_match = re.search(r"attempted to call tool\s*'(\w+=\{.+)", error_str, re.DOTALL)
+        if tool_match:
+            raw = tool_match.group(1)
+            # Clean up: remove trailing quote/bracket artifacts
+            raw = raw.rstrip("'\"")
+            failed_gen = raw
+
+    if not failed_gen:
+        return None
+
+    # Now parse the XML-style function call(s)
+    # Groq/Llama generates various formats:
+    #   <function=goto{"url": "https://..."}</function>
+    #   <function=goto>{"url": "https://..."}</function>  
+    #   <function=look></function>
+    #   <function=type{"selector": "#x", "text": "y"}</function>
+    #   deploy_browser_agent={"task": "..."}  (no XML at all)
+
+    # Unified pattern: function name, then optional JSON
+    # Handle both <function=name>{"args"}</function> and <function=name{"args"}</function>
+    calls = re.findall(
+        r'<function=(\w+)>?\s*(.*?)\s*<?/function>',
+        failed_gen,
+        re.DOTALL,
+    )
+
+    # Fallback: no XML tags, just tool_name={"args"} or tool_name={...}
+    if not calls:
+        bare_match = re.match(r'(\w+)\s*=\s*(\{.+\})\s*$', failed_gen.strip(), re.DOTALL)
+        if bare_match:
+            calls = [(bare_match.group(1), bare_match.group(2))]
+
+    # Fallback 2: look for tool_name({"args"}) pattern
+    if not calls:
+        paren_match = re.match(r'(\w+)\s*\(\s*(\{.+\})\s*\)\s*$', failed_gen.strip(), re.DOTALL)
+        if paren_match:
+            calls = [(paren_match.group(1), paren_match.group(2))]
+
+    if not calls:
+        return None
+
+    blocks = []
+
+    # Extract any text before the first <function tag
+    text_before = re.split(r'<function=', failed_gen)[0].strip()
+    if text_before:
+        blocks.append(ContentBlock("text", text=text_before))
+
+    for func_name, args_str in calls:
+        # Parse the arguments JSON
+        args = {}
+        args_raw = args_str.strip()
+        # Remove trailing > that sometimes gets captured
+        if args_raw.endswith('>'):
+            args_raw = args_raw[:-1].strip()
+        if args_raw and args_raw.startswith('{'):
+            try:
+                args = json.loads(args_raw)
+            except json.JSONDecodeError:
+                # Try fixing common issues
+                try:
+                    # Remove trailing commas before }
+                    cleaned = re.sub(r',\s*}', '}', args_raw)
+                    # Fix escaped quotes
+                    cleaned = cleaned.replace('\\"', '"')
+                    args = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    print(f"    ⚠️ [Parser] Could not parse args: {args_raw[:200]}")
+                    pass
+
+        call_id = f"call_{uuid.uuid4().hex[:24]}"
+        blocks.append(ContentBlock(
+            "tool_use",
+            name=func_name,
+            input_data=args,
+            block_id=call_id,
+        ))
+
+    if not any(b.type == "tool_use" for b in blocks):
+        return None
+
+    print(f"    🔧 [LLM Client] Recovered {len(calls)} malformed tool call(s): {[c[0] for c in calls]}")
+
+    return LLMResponse(
+        content=blocks,
+        stop_reason="tool_use",
+        usage=Usage(input_tokens=0, output_tokens=0),
+    )
 
 
 # ─────────────────────────────────────────────
@@ -335,10 +475,15 @@ class LLMClient:
             self._client = OpenAI(api_key=api_key, base_url=base_url)
             self._mode = "openai"
 
-    # ── Non-streaming call (used by browser_agent) ──
+    # ── Non-streaming call (used by agents) ──
 
     def create(self, model, max_tokens, system, tools, messages):
-        """Create a completion (non-streaming). Returns normalized LLMResponse."""
+        """Create a completion (non-streaming). Returns normalized LLMResponse.
+        
+        Includes recovery logic for Groq/Llama tool_use_failed errors —
+        the model sometimes generates malformed XML tool calls which the
+        API rejects. We parse the failed generation and recover the tool call.
+        """
         if self._mode == "anthropic":
             resp = self._client.messages.create(
                 model=model,
@@ -349,15 +494,39 @@ class LLMClient:
             )
             return self._wrap_anthropic_response(resp)
         else:
+            import time as _time
             openai_tools = _anthropic_to_openai_tools(tools)
             openai_messages = _convert_history_for_openai(messages, system)
-            resp = self._client.chat.completions.create(
-                model=model,
-                max_tokens=max_tokens,
-                tools=openai_tools if openai_tools else None,
-                messages=openai_messages,
-            )
-            return _openai_response_to_normalized(resp)
+
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                try:
+                    resp = self._client.chat.completions.create(
+                        model=model,
+                        max_tokens=max_tokens,
+                        tools=openai_tools if openai_tools else None,
+                        messages=openai_messages,
+                    )
+                    return _openai_response_to_normalized(resp)
+                except Exception as e:
+                    error_str = str(e)
+
+                    # Groq/Llama tool_use_failed — try to recover the tool call
+                    if "tool_use_failed" in error_str:
+                        recovered = _parse_failed_tool_call(e)
+                        if recovered:
+                            return recovered
+                        # If recovery failed, retry with a nudge
+                        if attempt < max_retries:
+                            _time.sleep(0.5 * attempt)
+                            continue
+
+                    # Rate limit — just retry
+                    if "rate_limit" in error_str.lower() and attempt < max_retries:
+                        _time.sleep(1.0 * attempt)
+                        continue
+
+                    raise
 
     # ── Streaming call (used by planner) ──
 

@@ -7,6 +7,8 @@ import ThinkingStream from './components/ThinkingStream'
 import TaskPanel from './components/TaskPanel'
 import MessagePanel from './components/MessagePanel'
 import ActionLog from './components/ActionLog'
+import ProcessControl from './components/ProcessControl'
+import ConsoleOutput from './components/ConsoleOutput'
 import Notifications from './components/Notifications'
 import ShortcutOverlay from './components/ShortcutOverlay'
 import MobileNav from './components/MobileNav'
@@ -55,17 +57,29 @@ function DashboardLayout() {
       <main className="relative z-10 flex-1 overflow-hidden">
         {activeView === 'dashboard' && (
           <div className="h-full flex flex-col">
-            {/* Top panels: 3-column on desktop, tabbed on mobile */}
-            <div className="flex-1 hidden md:grid md:grid-cols-[280px_1fr_300px] gap-px bg-panel-border overflow-hidden">
-              {/* Tasks */}
-              <div className="bg-void-950 overflow-hidden">
-                <TaskPanel />
+            {/* Desktop: 4-column layout with process control + thinking + tasks/messages */}
+            <div className="flex-1 hidden md:grid md:grid-cols-[240px_1fr_300px] gap-px bg-panel-border overflow-hidden">
+              {/* Left: Process Control + Tasks */}
+              <div className="bg-void-950 overflow-hidden flex flex-col">
+                <div className="h-[45%] border-b border-panel-border">
+                  <ProcessControl />
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <TaskPanel />
+                </div>
               </div>
-              {/* Thinking */}
-              <div className="bg-void-950 overflow-hidden relative">
-                <ThinkingStream />
+
+              {/* Center: Console Output + Thinking Stream */}
+              <div className="bg-void-950 overflow-hidden flex flex-col">
+                <div className="h-[45%] border-b border-panel-border relative">
+                  <ConsoleOutput />
+                </div>
+                <div className="flex-1 overflow-hidden relative">
+                  <ThinkingStream />
+                </div>
               </div>
-              {/* Messages */}
+
+              {/* Right: Messages */}
               <div className="bg-void-950 overflow-hidden">
                 <MessagePanel />
               </div>
@@ -73,11 +87,16 @@ function DashboardLayout() {
 
             {/* Mobile: show thinking stream only in dashboard view */}
             <div className="flex-1 md:hidden overflow-hidden bg-void-950">
-              <ThinkingStream />
+              <div className="h-1/3 border-b border-panel-border">
+                <ProcessControl />
+              </div>
+              <div className="h-2/3 overflow-hidden relative">
+                <ConsoleOutput />
+              </div>
             </div>
 
             {/* Bottom: Action Log */}
-            <div className="h-52 border-t border-panel-border bg-void-950 hidden md:block overflow-hidden">
+            <div className="h-44 border-t border-panel-border bg-void-950 hidden md:block overflow-hidden">
               <ActionLog />
             </div>
           </div>

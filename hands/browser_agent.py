@@ -3,11 +3,11 @@
 ║      TARS — Browser Agent: Autonomous Browser Brain          ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  A sub-agent with its own LLM loop that controls Chrome      ║
-║  using PHYSICAL mouse + keyboard — exactly like a human.     ║
+║  via CDP (Chrome DevTools Protocol) — direct websocket.      ║
 ║                                                              ║
-║  JS is READ-ONLY (inspect page, find elements).              ║
-║  All actions = real mouse clicks + real keyboard typing.     ║
-║  Dynamic coordinate mapping — works at any window size.      ║
+║  No cliclick. No screen coordinates. No monitor bugs.        ║
+║  Clicks by selector/text. Types via native input pipeline.   ║
+║  Works on any screen setup, any window position.             ║
 ║                                                              ║
 ║  Sends iMessage progress updates so user sees what's         ║
 ║  happening in real time.                                     ║
@@ -25,7 +25,7 @@ from hands.browser import (
     act_close_tab, act_new_tab, act_back, act_forward,
     act_refresh, act_wait, act_wait_for_text, act_run_js,
     act_screenshot, act_handle_dialog, _detect_challenge,
-    _activate_chrome,
+    _activate_chrome, web_search,
 )
 
 
@@ -146,34 +146,59 @@ BROWSER_TOOLS = [
 #  System Prompt
 # ─────────────────────────────────────────────
 
-BROWSER_AGENT_PROMPT = """You are TARS Browser Agent — you control Google Chrome on macOS using PHYSICAL mouse clicks and keyboard typing. You interact with web pages exactly like a human would.
+BROWSER_AGENT_PROMPT = """You are TARS Browser Agent — you control Google Chrome via CDP (Chrome DevTools Protocol).
 
-## Your Tools (simple, human-like)
-- **look** — See all interactive elements on the page (fields, buttons, dropdowns, links). ALWAYS do this first.
-- **click** — Physically click a button/link by its text ("Next", "Sign in") or CSS selector ("#submit")
-- **type** — Click on an input field and physically type text into it
-- **select** — Open a dropdown and pick an option. Works with ANY dropdown type.
-- **key** — Press a keyboard key (enter, tab, escape, arrow keys, etc.)
-- **scroll/read/wait/goto/back** — Navigation and waiting
+## CRITICAL RULE: ONLY USE SELECTORS FROM `look` OUTPUT
+NEVER guess or assume field names. NEVER use selectors like #firstName, #email, #password unless `look` showed them.
+Modern signup pages often use generated IDs like #floatingLabelInput4 or #i0116. You MUST read the `look` output to find the real selectors.
 
-## How You Work (like a human)
-1. **Look first** — Always call `look` to see what's on the page before acting
-2. **Click things** — Use `click` with the button text ("Next", "Create account") 
-3. **Type in fields** — Use `type` with the field selector from `look` output (#firstName, [name=email])
-4. **Pick dropdowns** — Use `select` with the dropdown label and option text
-5. **Wait after actions** — After clicking buttons that submit/navigate, `wait` 2-3 seconds then `look` again
+## How to Fill Multi-Step Forms (most signup/login pages work this way)
+1. `look` → see what's on the page (usually 1 field at a time)
+2. `type` into the EXACT selector shown by `look` 
+3. `click` the button shown (use button TEXT like "Next", not "[Next]")
+4. `wait` 2 seconds for the page to update
+5. `look` again → the page now shows the NEXT field
+6. Repeat until done
 
-## Important Rules
-1. ALWAYS `look` before interacting. Never guess what's on the page.
-2. After clicking Next/Submit, ALWAYS `wait` 2-3s then `look` to see the new state.
-3. Fill fields ONE AT A TIME with `type`. Don't try to fill multiple at once.
-4. For dropdowns, just use `select` — it handles all dropdown types automatically.
-5. If something fails, try a different approach. Don't repeat the same action more than twice.
-6. If clicking by text fails, try with a CSS selector from `look`. If that fails, try `key` (tab to it + enter).
-7. Call `done` when finished. Call `stuck` if you've tried 3+ approaches and nothing works.
-8. NEVER use `js` to click buttons, fill fields, or modify the DOM. JS is READ-ONLY for getting info. All actions must be physical.
-9. When a page transitions (SPA), content may change without URL changing. Always `look` again.
-10. For Google/Material dropdowns: `select` with the label text (e.g. select dropdown="Month" option="June").
+## Example Workflow
+If `look` shows:
+  FIELDS:
+    Email → #floatingLabelInput4 (email)
+  BUTTONS:
+    [Next]
+Then you do:
+  type(selector="#floatingLabelInput4", text="myemail@example.com")
+  click(target="Next")
+  wait(seconds=2)
+  look()
+Then if `look` NOW shows:
+  FIELDS:
+    Password → #floatingLabelInput13 (password)
+  BUTTONS:
+    [Next]
+Then you do:
+  type(selector="#floatingLabelInput13", text="MyPassword123")
+  click(target="Next")  
+  wait(seconds=2)
+  look()
+
+## Tools
+- **look** — See all interactive elements. ALWAYS do this FIRST and AFTER every action.
+- **click** — Click by visible text ("Next", "Sign in") or CSS selector ("#submit"). Use the text WITHOUT brackets.
+- **type** — Fill a field using the EXACT CSS selector from `look` output (e.g. `#floatingLabelInput4`)
+- **select** — Pick a dropdown option
+- **key** — Press keyboard key (enter, tab, escape, etc.)
+- **scroll/read/wait/goto/back/forward/refresh/tabs/screenshot/js** — Other tools
+
+## RULES
+1. ONLY use selectors from `look`. If `look` shows `Email → #floatingLabelInput4`, use `#floatingLabelInput4`.
+2. Fill ONE field at a time. Click the button. Wait. Look. Repeat.
+3. If ⚠️ ERRORS/ALERTS appear in `look`, read them and adjust (e.g. "username taken" → try another).
+4. NEVER call `done` unless you see a success/welcome page. If still on a form, you're NOT done.
+5. If a username is taken, add random numbers and try again.
+6. Click buttons by their TEXT (e.g. "Next"), not by "[Next]" with brackets.
+7. `js` is READ-ONLY. Never use it to click or modify the page.
+8. If stuck after 3+ retries on the same step, call `stuck` with an honest explanation.
 """
 
 
@@ -240,7 +265,7 @@ class BrowserAgent:
         if self.phone:
             _send_progress(self.phone, msg)
 
-    def run(self, task):
+    def run(self, task, context=None):
         """Execute a browser task autonomously. Returns result dict."""
         print(f"  🌐 Browser Agent: {task[:80]}...")
         self._notify(f"🌐 Starting: {task[:300]}")
@@ -248,7 +273,15 @@ class BrowserAgent:
         # Make sure Chrome is active
         _activate_chrome()
 
-        messages = [{"role": "user", "content": f"Complete this task:\n\n{task}"}]
+        # Build initial user message with optional escalation context
+        user_msg = f"Complete this task:\n\n{task}"
+        if context:
+            user_msg += f"\n\n## Additional guidance\n{context}"
+        messages = [{"role": "user", "content": user_msg}]
+        
+        # Track success/error metrics to catch hallucinated success
+        total_actions = 0
+        total_errors = 0
 
         for step in range(1, self.max_steps + 1):
             print(f"  🧠 Step {step}/{self.max_steps}...")
@@ -269,6 +302,8 @@ class BrowserAgent:
 
             assistant_content = response.content
             tool_results = []
+            tools_this_step = 0
+            MAX_TOOLS_PER_STEP = 2  # Force step-by-step: ONE action per step
 
             for block in assistant_content:
                 if block.type == "text" and block.text.strip():
@@ -278,10 +313,53 @@ class BrowserAgent:
                     name = block.name
                     inp = block.input
                     tid = block.id
+                    
+                    # Limit tool calls per step to prevent batching hallucinations
+                    tools_this_step += 1
+                    if tools_this_step > MAX_TOOLS_PER_STEP:
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tid,
+                            "content": "SKIPPED: You sent too many actions at once. Do ONE action per step. Your workflow must be: Step 1: look. Step 2: type or click (ONE action). Step 3: wait. Step 4: look again. Never batch multiple actions.",
+                        })
+                        continue
 
                     # Terminal tools
                     if name == "done":
                         summary = inp.get("summary", "Done.")
+                        # Guard 1: reject if error rate too high
+                        if total_actions > 2 and total_errors >= total_actions * 0.5:
+                            print(f"  ⚠️ Rejecting 'done' — {total_errors}/{total_actions} actions failed")
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tid,
+                                "content": f"REJECTED: You cannot claim success — {total_errors} of {total_actions} actions returned errors. Call 'look' to see the current page state, then try a different approach. If truly stuck, call 'stuck' instead.",
+                            })
+                            continue
+                        # Guard 2: reject if 'done' called too early (< 4 actions)
+                        if total_actions < 4:
+                            print(f"  ⚠️ Rejecting 'done' — only {total_actions} actions taken, too few")
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tid,
+                                "content": f"REJECTED: Only {total_actions} actions taken — that's too few to have completed a signup/login. Call 'look' to verify the page shows a success/welcome state before calling done.",
+                            })
+                            continue
+                        # Guard 3: verify by checking the current page
+                        verify = act_inspect_page()
+                        verify_lower = verify.lower()
+                        fail_signals = ["signup", "sign up", "create account", "create your", "enter your", "password", "username", "create a", "register", "get started", "floatinglabel"]
+                        success_signals = ["welcome", "inbox", "dashboard", "account created", "you're all set", "verify your email", "confirmation", "successfully"]
+                        has_fail = any(s in verify_lower for s in fail_signals)
+                        has_success = any(s in verify_lower for s in success_signals)
+                        if has_fail and not has_success:
+                            print(f"  ⚠️ Rejecting 'done' — page still shows signup/form fields")
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tid,
+                                "content": f"REJECTED: Page still shows signup/login form. Current page:\n{verify[:1500]}\n\nYou are NOT done yet. Continue filling the form or call 'stuck'.",
+                            })
+                            continue
                         print(f"  ✅ Done: {summary[:150]}")
                         self._notify(f"✅ Done: {summary[:500]}")
                         return {"success": True, "content": summary}
@@ -290,7 +368,7 @@ class BrowserAgent:
                         reason = inp.get("reason", "Unknown.")
                         print(f"  ❌ Stuck: {reason[:150]}")
                         self._notify(f"❌ Stuck: {reason[:500]}")
-                        return {"success": False, "content": f"Stuck: {reason}"}
+                        return {"success": False, "stuck": True, "stuck_reason": reason, "content": f"Browser agent stuck: {reason}"}
 
                     # Execute
                     inp_short = json.dumps(inp)[:100]
@@ -298,6 +376,15 @@ class BrowserAgent:
                     result = self._dispatch(name, inp)
                     result_str = str(result)[:4000]
                     print(f"      → {result_str[:150]}")
+                    
+                    # Track error rate
+                    total_actions += 1
+                    if result_str.startswith("ERROR"):
+                        total_errors += 1
+                        # If a type/click failed, show the agent what's ACTUALLY on the page
+                        if name in ("type", "click") and "No visible" in result_str:
+                            current_page = act_inspect_page()
+                            result_str += f"\n\nHere is what is ACTUALLY on the page right now:\n{current_page[:2000]}\n\nUse ONLY the selectors shown above."
 
                     tool_results.append({
                         "type": "tool_result",

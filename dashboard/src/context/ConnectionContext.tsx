@@ -4,12 +4,17 @@ import { sendBrowserNotification } from '../lib/notifications'
 import type {
   TarsEvent, ConnectionState, SubsystemStatus, TarsStats,
   TaskItem, ThinkingBlock, ChatMessage, ActionLogEntry,
+  TarsProcess, OutputLine,
 } from '../lib/types'
 
 interface TarsContextValue {
   // Connection
   connectionState: ConnectionState
   subsystems: SubsystemStatus
+  tunnelConnected: boolean
+  // TARS Process
+  tarsProcess: TarsProcess
+  outputLog: OutputLine[]
   // Data
   tasks: TaskItem[]
   thinkingBlocks: ThinkingBlock[]
@@ -20,7 +25,12 @@ interface TarsContextValue {
   // Memory
   memoryContext: string
   memoryPreferences: string
-  // Actions
+  // Control Actions
+  startTars: (task?: string) => void
+  stopTars: () => void
+  killTars: () => void
+  restartTars: (task?: string) => void
+  // Data Actions
   sendTask: (task: string) => void
   sendMessage: (msg: string) => void
   killAgent: () => void
@@ -28,6 +38,8 @@ interface TarsContextValue {
   saveMemory: (field: string, content: string) => void
   requestMemory: () => void
   requestStats: () => void
+  requestProcessStatus: () => void
+  clearOutput: () => void
   setWsUrl: (url: string) => void
   setAuthToken: (token: string) => void
 }
@@ -39,6 +51,15 @@ const defaultStats: TarsStats = {
   tool_usage: {}, model_usage: {},
 }
 
+const defaultProcess: TarsProcess = {
+  running: false,
+  pid: null,
+  started_at: null,
+  status: 'stopped',
+  uptime: 0,
+  last_task: null,
+}
+
 const TarsContext = createContext<TarsContextValue | null>(null)
 
 export function useTars() {
@@ -48,20 +69,20 @@ export function useTars() {
 }
 
 function getDefaultWsUrl(): string {
-  // In production (cloud), use the relay URL
-  // In dev, connect to local TARS
   const host = window.location.hostname
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   if (host === 'localhost' || host === '127.0.0.1') {
     return `ws://${host}:8421`
   }
-  // Cloud: WebSocket on same host
   return `${protocol}//${window.location.host}/ws`
 }
 
 export function TarsProvider({ children }: { children: React.ReactNode }) {
   const wsRef = useRef<WebSocketManager | null>(null)
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
+  const [tunnelConnected, setTunnelConnected] = useState(false)
+  const [tarsProcess, setTarsProcess] = useState<TarsProcess>(defaultProcess)
+  const [outputLog, setOutputLog] = useState<OutputLine[]>([])
   const [subsystems, setSubsystems] = useState<SubsystemStatus>({
     websocket: 'disconnected', agent: 'offline', mac: 'unreachable', claude: 'idle',
   })
@@ -85,6 +106,59 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
     const time = new Date(timestamp).toLocaleTimeString()
 
     switch (type) {
+      // ── Tunnel & Process Status ──
+      case 'tunnel_status':
+        setTunnelConnected(data.connected)
+        setSubsystems(s => ({
+          ...s,
+          mac: data.connected ? 'reachable' : 'unreachable',
+        }))
+        if (!data.connected) {
+          setTarsProcess(prev => ({ ...prev, running: false, status: 'unknown' }))
+        }
+        break
+
+      case 'tars_process_status':
+        setTarsProcess(data as TarsProcess)
+        setSubsystems(s => ({
+          ...s,
+          agent: data.running
+            ? (data.status === 'running' ? 'working' : 'online')
+            : data.status === 'killed' ? 'killed' : 'offline',
+        }))
+        break
+
+      case 'tars_output': {
+        const line: OutputLine = {
+          stream: data.stream || 'stdout',
+          text: data.text || '',
+          ts: data.ts || Date.now() / 1000,
+        }
+        setOutputLog(prev => {
+          const next = [...prev, line]
+          return next.length > 1000 ? next.slice(-1000) : next
+        })
+        break
+      }
+
+      case 'tars_output_batch': {
+        const lines = (data.lines || []).map((l: any) => ({
+          stream: l.stream || 'stdout',
+          text: l.text || '',
+          ts: l.ts || Date.now() / 1000,
+        }))
+        setOutputLog(prev => {
+          const next = [...prev, ...lines]
+          return next.length > 1000 ? next.slice(-1000) : next
+        })
+        break
+      }
+
+      case 'command_response':
+        // Could show notification here
+        break
+
+      // ── Task Events ──
       case 'task_received': {
         taskIdRef.current++
         const task: TaskItem = {
@@ -109,6 +183,7 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         sendBrowserNotification('TARS // Task Complete', data.response?.substring(0, 100) || 'Done')
         break
 
+      // ── Thinking / Tool Events ──
       case 'thinking_start': {
         blockIdRef.current++
         const id = `think-${blockIdRef.current}`
@@ -166,6 +241,7 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         break
       }
 
+      // ── Message Events ──
       case 'imessage_sent':
         msgIdRef.current++
         setMessages(prev => [...prev, {
@@ -226,7 +302,6 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
       setSubsystems(s => ({
         ...s,
         websocket: state === 'connected' ? 'connected' : state === 'reconnecting' ? 'reconnecting' : 'disconnected',
-        mac: state === 'connected' ? 'reachable' : 'unreachable',
       }))
     })
 
@@ -236,15 +311,51 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
     return () => ws.disconnect()
   }, [handleEvent])
 
-  // Periodic stats refresh
+  // Periodic stats + process status refresh
   useEffect(() => {
     const interval = setInterval(() => {
       if (connectionState === 'connected') {
         wsRef.current?.send({ type: 'get_stats' })
+        wsRef.current?.send({ type: 'get_process_status' })
       }
     }, 5000)
     return () => clearInterval(interval)
   }, [connectionState])
+
+  // ── Control Actions ──
+  const startTars = useCallback((task?: string) => {
+    wsRef.current?.send({
+      type: 'control_command',
+      command: 'start_tars',
+      data: task ? { task } : {},
+    })
+    setTarsProcess(prev => ({ ...prev, status: 'starting' }))
+  }, [])
+
+  const stopTars = useCallback(() => {
+    wsRef.current?.send({
+      type: 'control_command',
+      command: 'stop_tars',
+    })
+    setTarsProcess(prev => ({ ...prev, status: 'stopping' }))
+  }, [])
+
+  const killTars = useCallback(() => {
+    wsRef.current?.send({
+      type: 'control_command',
+      command: 'kill_tars',
+    })
+    setTarsProcess(prev => ({ ...prev, status: 'killed' }))
+  }, [])
+
+  const restartTars = useCallback((task?: string) => {
+    wsRef.current?.send({
+      type: 'control_command',
+      command: 'restart_tars',
+      data: task ? { task } : {},
+    })
+    setTarsProcess(prev => ({ ...prev, status: 'starting' }))
+  }, [])
 
   const sendTask = useCallback((task: string) => {
     wsRef.current?.send({ type: 'send_task', task })
@@ -279,6 +390,14 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
     wsRef.current?.send({ type: 'get_stats' })
   }, [])
 
+  const requestProcessStatus = useCallback(() => {
+    wsRef.current?.send({ type: 'get_process_status' })
+  }, [])
+
+  const clearOutput = useCallback(() => {
+    setOutputLog([])
+  }, [])
+
   const setWsUrl = useCallback((url: string) => {
     wsRef.current?.updateUrl(url)
   }, [])
@@ -289,11 +408,14 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <TarsContext.Provider value={{
-      connectionState, subsystems,
+      connectionState, subsystems, tunnelConnected,
+      tarsProcess, outputLog,
       tasks, thinkingBlocks, messages, actionLog, stats, currentModel,
       memoryContext, memoryPreferences,
+      startTars, stopTars, killTars, restartTars,
       sendTask, sendMessage, killAgent, updateConfig, saveMemory,
       requestMemory: requestMemoryFn, requestStats: requestStatsFn,
+      requestProcessStatus, clearOutput,
       setWsUrl, setAuthToken,
     }}>
       {children}

@@ -15,6 +15,17 @@ export interface SubsystemStatus {
   claude: 'active' | 'idle' | 'error'
 }
 
+export type TarsProcessStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error' | 'killed' | 'unknown'
+
+export interface TarsProcess {
+  running: boolean
+  pid: number | null
+  started_at: number | null
+  status: TarsProcessStatus
+  uptime: number
+  last_task?: string | null
+}
+
 export interface TarsStats {
   total_events: number
   total_tokens_in: number
@@ -66,4 +77,16 @@ export interface ActionLogEntry {
   success: boolean
   duration: number | null
   time: string
+}
+
+export interface OutputLine {
+  stream: 'stdout' | 'stderr' | 'system'
+  text: string
+  ts: number
+}
+
+export interface ControlCommand {
+  type: 'control_command'
+  command: 'start_tars' | 'stop_tars' | 'kill_tars' | 'restart_tars' | 'get_process_status' | 'send_task'
+  data?: Record<string, any>
 }

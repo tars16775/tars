@@ -1,5 +1,5 @@
 import { useTars } from '../context/ConnectionContext'
-import { Wifi, WifiOff, Monitor, Brain, Bot, AlertTriangle } from 'lucide-react'
+import { Wifi, WifiOff, Monitor, Brain, Bot, Power, PowerOff } from 'lucide-react'
 import clsx from 'clsx'
 
 interface StatusItemProps {
@@ -9,21 +9,21 @@ interface StatusItemProps {
 }
 
 function StatusItem({ label, status, icon }: StatusItemProps) {
-  const color = status === 'connected' || status === 'online' || status === 'reachable' || status === 'active'
+  const color = status === 'connected' || status === 'online' || status === 'reachable' || status === 'active' || status === 'running'
     ? 'text-signal-green'
-    : status === 'working' || status === 'reconnecting' || status === 'idle'
+    : status === 'working' || status === 'reconnecting' || status === 'idle' || status === 'starting'
     ? 'text-signal-amber'
     : status === 'killed'
     ? 'text-signal-red'
     : 'text-signal-red'
 
-  const dotColor = status === 'connected' || status === 'online' || status === 'reachable' || status === 'active'
+  const dotColor = status === 'connected' || status === 'online' || status === 'reachable' || status === 'active' || status === 'running'
     ? 'bg-signal-green'
-    : status === 'working' || status === 'reconnecting' || status === 'idle'
+    : status === 'working' || status === 'reconnecting' || status === 'idle' || status === 'starting'
     ? 'bg-signal-amber'
     : 'bg-signal-red'
 
-  const shouldPulse = status === 'working' || status === 'reconnecting' || status === 'active'
+  const shouldPulse = status === 'working' || status === 'reconnecting' || status === 'active' || status === 'starting'
 
   return (
     <div className="flex items-center gap-2 px-2 py-1" title={`${label}: ${status}`}>
@@ -44,24 +44,24 @@ function StatusItem({ label, status, icon }: StatusItemProps) {
 }
 
 export default function StatusHUD() {
-  const { subsystems } = useTars()
+  const { subsystems, tunnelConnected, tarsProcess } = useTars()
 
   return (
     <div className="flex items-center gap-1 divide-x divide-panel-border">
       <StatusItem
-        label="Link"
+        label="Relay"
         status={subsystems.websocket}
         icon={subsystems.websocket === 'connected' ? <Wifi size={13} /> : <WifiOff size={13} />}
       />
       <StatusItem
-        label="Agent"
-        status={subsystems.agent}
-        icon={<Bot size={13} />}
+        label="Tunnel"
+        status={tunnelConnected ? 'connected' : 'disconnected'}
+        icon={<Monitor size={13} />}
       />
       <StatusItem
-        label="Mac"
-        status={subsystems.mac}
-        icon={<Monitor size={13} />}
+        label="TARS"
+        status={tarsProcess.status}
+        icon={tarsProcess.running ? <Power size={13} /> : <PowerOff size={13} />}
       />
       <StatusItem
         label="Claude"

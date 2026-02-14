@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-TARS Tunnel -- connects the local TARS agent to the cloud relay.
+TARS Tunnel — Full Control Edition
+Connects the local Mac to the cloud relay, manages the TARS process,
+and streams everything to the dashboard in real-time.
 
-Run this on your Mac alongside tars.py. It forwards all event_bus events
-to the Railway-hosted relay server and receives commands back.
+Features:
+  - Start/stop/kill TARS process remotely from dashboard
+  - Stream TARS stdout/stderr to cloud in real-time
+  - Forward events from event_bus to relay
+  - Receive and execute commands from dashboard
+  - Auto-reconnect with exponential backoff
 
 Usage:
     python tunnel.py                           # Uses config.yaml relay settings
@@ -16,6 +22,7 @@ import json
 import time
 import asyncio
 import signal
+import subprocess
 import threading
 import yaml
 
@@ -31,6 +38,172 @@ def load_config():
         return yaml.safe_load(f)
 
 
+class TARSProcessManager:
+    """Manages the tars.py process as a subprocess."""
+
+    def __init__(self, base_dir: str, on_output=None, on_status_change=None):
+        self.base_dir = base_dir
+        self.process: subprocess.Popen = None
+        self.on_output = on_output  # callback(stream, text)
+        self.on_status_change = on_status_change  # callback(status_dict)
+        self._reader_threads = []
+        self._started_at = None
+
+    @property
+    def is_running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    @property
+    def pid(self):
+        return self.process.pid if self.process else None
+
+    def get_status(self) -> dict:
+        running = self.is_running
+        return {
+            "running": running,
+            "pid": self.pid,
+            "started_at": self._started_at,
+            "status": "running" if running else "stopped",
+            "uptime": (time.time() - self._started_at) if self._started_at and running else 0,
+        }
+
+    def start(self, task: str = None) -> dict:
+        """Start tars.py as a subprocess."""
+        if self.is_running:
+            return {"success": False, "error": "TARS is already running", "pid": self.pid}
+
+        try:
+            # Find python in the venv
+            venv_python = os.path.join(self.base_dir, "venv", "bin", "python")
+            if not os.path.exists(venv_python):
+                venv_python = sys.executable  # fallback to current python
+
+            cmd = [venv_python, os.path.join(self.base_dir, "tars.py")]
+            if task:
+                cmd.append(task)
+
+            self._emit_output("system", f"Starting TARS: {' '.join(cmd)}")
+            self._notify_status("starting")
+
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=self.base_dir,
+                bufsize=1,
+                universal_newlines=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            self._started_at = time.time()
+
+            # Start reader threads for stdout and stderr
+            self._reader_threads = []
+            for stream_name, pipe in [("stdout", self.process.stdout), ("stderr", self.process.stderr)]:
+                t = threading.Thread(target=self._read_stream, args=(stream_name, pipe), daemon=True)
+                t.start()
+                self._reader_threads.append(t)
+
+            # Monitor thread for process exit
+            t = threading.Thread(target=self._monitor_process, daemon=True)
+            t.start()
+            self._reader_threads.append(t)
+
+            self._notify_status("running")
+            self._emit_output("system", f"TARS started (PID {self.process.pid})")
+
+            return {"success": True, "pid": self.process.pid}
+
+        except Exception as e:
+            self._notify_status("error")
+            self._emit_output("system", f"Failed to start TARS: {e}")
+            return {"success": False, "error": str(e)}
+
+    def stop(self) -> dict:
+        """Gracefully stop TARS (SIGTERM)."""
+        if not self.is_running:
+            return {"success": False, "error": "TARS is not running"}
+
+        pid = self.process.pid
+        self._emit_output("system", f"Stopping TARS (PID {pid})...")
+        self._notify_status("stopping")
+
+        try:
+            self.process.terminate()
+            # Wait up to 10 seconds for graceful shutdown
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._emit_output("system", "TARS didn't stop gracefully, killing...")
+                self.process.kill()
+                self.process.wait(timeout=5)
+
+            self._started_at = None
+            self._notify_status("stopped")
+            self._emit_output("system", f"TARS stopped (was PID {pid})")
+            return {"success": True}
+
+        except Exception as e:
+            self._emit_output("system", f"Error stopping TARS: {e}")
+            return {"success": False, "error": str(e)}
+
+    def kill(self) -> dict:
+        """Force kill TARS (SIGKILL)."""
+        if not self.is_running:
+            return {"success": False, "error": "TARS is not running"}
+
+        pid = self.process.pid
+        self._emit_output("system", f"KILLING TARS (PID {pid})!")
+        self._notify_status("killed")
+
+        try:
+            self.process.kill()
+            self.process.wait(timeout=5)
+            self._started_at = None
+            self._notify_status("stopped")
+            self._emit_output("system", f"TARS killed (was PID {pid})")
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def restart(self, task: str = None) -> dict:
+        """Restart TARS."""
+        self._emit_output("system", "Restarting TARS...")
+        if self.is_running:
+            result = self.stop()
+            if not result.get("success"):
+                self.kill()
+            time.sleep(1)
+        return self.start(task=task)
+
+    def _read_stream(self, stream_name: str, pipe):
+        """Read a subprocess output stream line by line."""
+        try:
+            for line in pipe:
+                line = line.rstrip('\n')
+                if line:
+                    self._emit_output(stream_name, line)
+        except Exception:
+            pass
+
+    def _monitor_process(self):
+        """Monitor the subprocess and report when it exits."""
+        if self.process:
+            returncode = self.process.wait()
+            self._started_at = None
+            self._emit_output("system", f"TARS process exited with code {returncode}")
+            self._notify_status("stopped")
+
+    def _emit_output(self, stream: str, text: str):
+        """Send output to the callback."""
+        if self.on_output:
+            self.on_output(stream, text)
+
+    def _notify_status(self, status: str):
+        """Send status change to the callback."""
+        if self.on_status_change:
+            self.on_status_change(self.get_status() | {"status": status})
+
+
 class TARSTunnel:
     def __init__(self, relay_url: str, token: str):
         self.relay_url = relay_url
@@ -40,6 +213,45 @@ class TARSTunnel:
         self.reconnect_delay = 1
         self.max_reconnect_delay = 30
 
+        # Process manager
+        self.process_mgr = TARSProcessManager(
+            BASE_DIR,
+            on_output=self._on_process_output,
+            on_status_change=self._on_process_status_change,
+        )
+
+        # Queue for outbound messages
+        self._send_queue: asyncio.Queue = None
+        self._loop = None
+
+    def _on_process_output(self, stream: str, text: str):
+        """Called from reader threads when TARS outputs a line."""
+        msg = {
+            "type": "tars_output",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "ts_unix": time.time(),
+            "data": {"stream": stream, "text": text, "ts": time.time()},
+        }
+        self._enqueue(msg)
+
+    def _on_process_status_change(self, status: dict):
+        """Called when TARS process status changes."""
+        msg = {
+            "type": "tars_process_status",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "ts_unix": time.time(),
+            "data": status,
+        }
+        self._enqueue(msg)
+
+    def _enqueue(self, msg: dict):
+        """Thread-safe enqueue for the async send loop."""
+        if self._send_queue and self._loop:
+            try:
+                self._loop.call_soon_threadsafe(self._send_queue.put_nowait, msg)
+            except Exception:
+                pass
+
     async def connect(self):
         """Connect to the relay and maintain the connection."""
         try:
@@ -47,6 +259,8 @@ class TARSTunnel:
         except ImportError:
             print("  [!] Install websockets: pip install websockets")
             sys.exit(1)
+
+        self._loop = asyncio.get_event_loop()
 
         while self.running:
             try:
@@ -58,9 +272,10 @@ class TARSTunnel:
                     self.reconnect_delay = 1
                     print(f"  [+] Tunnel established")
 
-                    # Subscribe to local event_bus and forward events
-                    event_queue: asyncio.Queue = asyncio.Queue()
+                    # Create send queue
+                    self._send_queue = asyncio.Queue()
 
+                    # Subscribe to local event_bus and forward events
                     def on_event_sync(event_type, data):
                         event = {
                             "type": event_type,
@@ -68,10 +283,7 @@ class TARSTunnel:
                             "ts_unix": time.time(),
                             "data": data or {},
                         }
-                        try:
-                            event_queue.put_nowait(event)
-                        except asyncio.QueueFull:
-                            pass
+                        self._enqueue(event)
 
                     # Patch event_bus.emit to also forward events
                     original_emit = event_bus.emit
@@ -82,12 +294,16 @@ class TARSTunnel:
 
                     event_bus.emit = patched_emit
 
-                    # Two concurrent tasks: send events and receive commands
-                    send_task = asyncio.create_task(self._send_loop(ws, event_queue))
+                    # Send initial process status
+                    self._on_process_status_change(self.process_mgr.get_status())
+
+                    # Three concurrent tasks: send events, receive commands, status heartbeat
+                    send_task = asyncio.create_task(self._send_loop(ws))
                     recv_task = asyncio.create_task(self._recv_loop(ws))
+                    heartbeat_task = asyncio.create_task(self._status_heartbeat())
 
                     done, pending = await asyncio.wait(
-                        [send_task, recv_task],
+                        [send_task, recv_task, heartbeat_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     for t in pending:
@@ -104,12 +320,12 @@ class TARSTunnel:
                 await asyncio.sleep(self.reconnect_delay)
                 self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
 
-    async def _send_loop(self, ws, queue: asyncio.Queue):
-        """Forward local events to the relay."""
+    async def _send_loop(self, ws):
+        """Forward queued messages to the relay."""
         while True:
-            event = await queue.get()
+            msg = await self._send_queue.get()
             try:
-                await ws.send(json.dumps(event))
+                await ws.send(json.dumps(msg))
             except Exception:
                 return
 
@@ -121,25 +337,89 @@ class TARSTunnel:
             try:
                 data = json.loads(message)
                 msg_type = data.get("type", "")
+                cmd_id = data.get("cmd_id", "")
 
-                # These are commands from the dashboard relayed through
-                # Handle them locally by emitting to the event bus
-                # The TARS server.py WebSocket handler will pick them up
+                # ── Control commands (start/stop/kill TARS) ──
+                if msg_type == "control_command":
+                    command = data.get("command", "")
+                    cmd_data = data.get("data", {})
+                    result = self._handle_control_command(command, cmd_data)
 
+                    # Send response back to relay
+                    response = {
+                        "type": "command_response",
+                        "cmd_id": cmd_id,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "ts_unix": time.time(),
+                        "data": result,
+                    }
+                    self._enqueue(response)
+                    continue
+
+                # ── Legacy message types ──
                 if msg_type == "send_task":
-                    event_bus.emit("task_received", {"task": data.get("task", ""), "source": "dashboard"})
-                    # Also need to trigger actual task processing
-                    # This is handled by the TARSServer._handle_ws_message
+                    task = data.get("task", "")
+                    if task:
+                        # If TARS is running, forward to local WS
+                        if self.process_mgr.is_running:
+                            await self._forward_to_local(message)
+                            event_bus.emit("task_received", {"task": task, "source": "dashboard"})
+                        else:
+                            # Start TARS with this task
+                            self.process_mgr.start(task=task)
 
                 elif msg_type == "kill":
+                    if self.process_mgr.is_running:
+                        self.process_mgr.kill()
                     event_bus.emit("kill_switch", {"source": "dashboard"})
 
                 elif msg_type in ("get_stats", "get_memory", "save_memory", "update_config"):
-                    # Forward to local WebSocket server
                     await self._forward_to_local(message)
 
             except json.JSONDecodeError:
                 pass
+
+    def _handle_control_command(self, command: str, data: dict) -> dict:
+        """Handle a control command from the dashboard."""
+        if command == "start_tars":
+            task = data.get("task")
+            return self.process_mgr.start(task=task)
+
+        elif command == "stop_tars":
+            return self.process_mgr.stop()
+
+        elif command == "kill_tars":
+            return self.process_mgr.kill()
+
+        elif command == "restart_tars":
+            task = data.get("task")
+            return self.process_mgr.restart(task=task)
+
+        elif command == "get_process_status":
+            return {"success": True, **self.process_mgr.get_status()}
+
+        elif command == "send_task":
+            task = data.get("task", "")
+            if not task:
+                return {"success": False, "error": "No task provided"}
+            if self.process_mgr.is_running:
+                # Forward to running TARS
+                asyncio.run_coroutine_threadsafe(
+                    self._forward_to_local(json.dumps({"type": "send_task", "task": task})),
+                    self._loop,
+                )
+                return {"success": True, "message": "Task sent to running TARS"}
+            else:
+                # Start TARS with this task
+                return self.process_mgr.start(task=task)
+
+        return {"success": False, "error": f"Unknown command: {command}"}
+
+    async def _status_heartbeat(self):
+        """Periodically send process status to the relay."""
+        while True:
+            await asyncio.sleep(5)
+            self._on_process_status_change(self.process_mgr.get_status())
 
     async def _forward_to_local(self, message: str):
         """Forward a command to the local TARS WebSocket server."""
@@ -155,7 +435,10 @@ class TARSTunnel:
             pass
 
     def stop(self):
+        """Stop the tunnel (and TARS if running)."""
         self.running = False
+        if self.process_mgr.is_running:
+            self.process_mgr.stop()
 
 
 def main():
@@ -175,8 +458,12 @@ def main():
     token = config.get("relay", {}).get("token", "tars-default-token-change-me")
 
     print()
-    print("  TARS TUNNEL")
-    print(f"  Relay: {relay_url}")
+    print("  ╔══════════════════════════════════════╗")
+    print("  ║     TARS TUNNEL — Full Control       ║")
+    print("  ╠══════════════════════════════════════╣")
+    print(f"  ║  Relay: {relay_url[:30]:<30}║")
+    print("  ║  Process Manager: Ready              ║")
+    print("  ╚══════════════════════════════════════╝")
     print()
 
     tunnel = TARSTunnel(relay_url, token)

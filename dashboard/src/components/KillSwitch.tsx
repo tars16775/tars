@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react'
-import { ShieldAlert, ShieldOff } from 'lucide-react'
+import { ShieldAlert, ShieldOff, Power, Square } from 'lucide-react'
 import { useTars } from '../context/ConnectionContext'
 import clsx from 'clsx'
 
 export default function KillSwitch() {
-  const { killAgent, subsystems } = useTars()
+  const { killTars, stopTars, tarsProcess, tunnelConnected } = useTars()
   const [armed, setArmed] = useState(false)
 
   const handleClick = useCallback(() => {
@@ -13,20 +13,29 @@ export default function KillSwitch() {
       // Auto-disarm after 5 seconds
       setTimeout(() => setArmed(false), 5000)
     } else {
-      killAgent()
+      killTars()
       setArmed(false)
     }
-  }, [armed, killAgent])
+  }, [armed, killTars])
 
-  if (subsystems.agent === 'killed') {
+  if (!tunnelConnected) {
     return (
       <button
         disabled
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-widest bg-signal-red/10 text-signal-red/50 border border-signal-red/20 cursor-not-allowed"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-widest bg-slate-800/50 text-slate-600 border border-slate-700 cursor-not-allowed"
       >
-        <ShieldOff size={12} />
-        KILLED
+        <Power size={12} />
+        OFFLINE
       </button>
+    )
+  }
+
+  if (!tarsProcess.running) {
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-widest bg-void-800/50 text-slate-500 border border-panel-border">
+        <Square size={10} className="text-slate-600" />
+        STOPPED
+      </div>
     )
   }
 

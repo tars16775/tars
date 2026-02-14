@@ -17,6 +17,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 import websockets
 
 from utils.event_bus import event_bus
+from utils.agent_monitor import agent_monitor
 
 # Prefer built Vite output (dashboard/dist/), fall back to dashboard/ root
 _base = os.path.dirname(os.path.abspath(__file__))
@@ -130,6 +131,10 @@ class TARSServer:
                     event_bus.emit("task_received", {"task": task, "source": "dashboard"})
                     # Process in a thread so we don't block
                     threading.Thread(target=self.tars._process_task, args=(task,), daemon=True).start()
+
+            elif msg_type == "get_agents":
+                agent_data = agent_monitor.get_dashboard_data()
+                await websocket.send(json.dumps({"type": "agent_status", "data": agent_data}))
 
             elif msg_type == "kill":
                 event_bus.emit("kill_switch", {"source": "dashboard"})
