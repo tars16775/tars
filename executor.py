@@ -21,7 +21,9 @@
 import os
 import json
 import subprocess
+import threading
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from brain.llm_client import LLMClient
 from brain.self_improve import SelfImproveEngine
@@ -516,7 +518,7 @@ class ToolExecutor:
         self.monitor.on_started(agent_type, task[:200], attempt)
         self.logger.info(f"🚀 Deploying {agent_type} agent (deployment {attempt}/{MAX_DEPLOYMENTS_PER_TASK}): {task[:100]}")
 
-        # ── Create and run the agent ──
+        # ── Create and run the agent (with timeout) ──
         agent = agent_class(
             llm_client=self.llm_client,
             model=self.heavy_model,
@@ -524,7 +526,29 @@ class ToolExecutor:
             phone=self.phone,
         )
 
-        result = agent.run(task, context=context)
+        agent_timeout = 300  # 5 minutes max per agent deployment
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(agent.run, task, context)
+                result = future.result(timeout=agent_timeout)
+        except FuturesTimeout:
+            result = {
+                "success": False,
+                "content": f"Agent timed out after {agent_timeout}s. The task may be too complex for a single agent deployment — try breaking it into smaller steps.",
+                "steps": 0,
+                "stuck": True,
+                "stuck_reason": f"Timed out after {agent_timeout}s",
+            }
+            self.logger.warning(f"⏰ {agent_type} agent timed out after {agent_timeout}s")
+        except Exception as e:
+            result = {
+                "success": False,
+                "content": f"Agent crashed: {e}",
+                "steps": 0,
+                "stuck": True,
+                "stuck_reason": f"Agent exception: {e}",
+            }
+            self.logger.error(f"💥 {agent_type} agent crashed: {e}")
 
         # ── Record this deployment ──
         entry = {

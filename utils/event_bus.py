@@ -10,6 +10,7 @@ and message flows through here to the dashboard.
 import json
 import time
 import asyncio
+import threading
 from datetime import datetime
 from collections import deque
 
@@ -19,6 +20,7 @@ class EventBus:
 
     def __init__(self, max_history=500):
         self.subscribers = []          # WebSocket clients
+        self._sub_lock = threading.Lock()  # Thread-safe subscriber management
         self.history = deque(maxlen=max_history)  # Recent events for new clients
         self._loop = None
         self._stats = {
@@ -56,14 +58,18 @@ class EventBus:
         # Store in history
         self.history.append(event)
 
-        # Send to all WebSocket subscribers
+        # Send to all WebSocket subscribers (thread-safe)
         message = json.dumps(event)
-        for ws_send in self.subscribers[:]:
-            try:
-                if self._loop and self._loop.is_running():
-                    asyncio.run_coroutine_threadsafe(ws_send(message), self._loop)
-            except Exception:
-                self.subscribers.remove(ws_send)
+        dead = []
+        with self._sub_lock:
+            for ws_send in self.subscribers:
+                try:
+                    if self._loop and self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(ws_send(message), self._loop)
+                except Exception:
+                    dead.append(ws_send)
+            for d in dead:
+                self.subscribers.remove(d)
 
     def _update_stats(self, event_type, data):
         """Update running statistics."""
@@ -99,12 +105,14 @@ class EventBus:
 
     def subscribe(self, ws_send):
         """Add a WebSocket client."""
-        self.subscribers.append(ws_send)
+        with self._sub_lock:
+            self.subscribers.append(ws_send)
 
     def unsubscribe(self, ws_send):
         """Remove a WebSocket client."""
-        if ws_send in self.subscribers:
-            self.subscribers.remove(ws_send)
+        with self._sub_lock:
+            if ws_send in self.subscribers:
+                self.subscribers.remove(ws_send)
 
     def get_history(self):
         """Get all stored events for new clients."""

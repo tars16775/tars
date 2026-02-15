@@ -30,8 +30,14 @@ class IMessageSender:
         if len(message) > self.max_length:
             message = message[:self.max_length - 20] + "\n\n... (truncated)"
 
-        # Escape for AppleScript
-        escaped = message.replace("\\", "\\\\").replace('"', '\\"')
+        # Escape for AppleScript — handle all special chars
+        escaped = (message
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "")
+            .replace("\t", " ")
+        )
 
         script = f'''
         tell application "Messages"

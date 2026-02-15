@@ -24,6 +24,7 @@ import sys
 import yaml
 import time
 import signal
+import threading
 from datetime import datetime
 
 # Set working directory to script location
@@ -131,6 +132,7 @@ class TARS:
 
         self.running = True
         self.kill_words = self.config["safety"]["kill_words"]
+        self._task_lock = threading.Lock()  # Prevent concurrent task processing
 
         # Handle Ctrl+C gracefully
         signal.signal(signal.SIGINT, self._shutdown)
@@ -225,34 +227,37 @@ class TARS:
         v4: The brain handles classification (chat vs task) internally.
         We DON'T reset conversation history — TARS remembers the flow.
         We only reset the deployment budget so each message gets fresh agents.
+        Thread-safe: only one task can run at a time.
         """
-        print(f"\n  {'═' * 50}")
-        print(f"  📨 Message: {task}")
-        print(f"  {'═' * 50}\n")
+        if not self._task_lock.acquire(blocking=False):
+            print(f"  ⚠️ Task already running, queueing: {task[:80]}")
+            self._task_lock.acquire()  # Block until current task finishes
+        
+        try:
+            print(f"\n  {'═' * 50}")
+            print(f"  📨 Message: {task}")
+            print(f"  {'═' * 50}\n")
 
-        self.logger.info(f"New message: {task}")
-        event_bus.emit("task_received", {"task": task, "source": "agent"})
-        event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
+            self.logger.info(f"New message: {task}")
+            event_bus.emit("task_received", {"task": task, "source": "agent"})
+            event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
 
-        # Reset deployment tracker (fresh agent budget) but NOT conversation
-        self.executor.reset_task_tracker()
+            # Reset deployment tracker (fresh agent budget) but NOT conversation
+            self.executor.reset_task_tracker()
 
-        # Update context with current task
-        self.memory.update_context(
-            f"# Current Task\n\n{task}\n\nStarted: {datetime.now().isoformat()}\n"
-        )
+            # Send to brain — it classifies and handles everything
+            response = self.brain.think(task)
 
-        # Send to brain — it classifies and handles everything
-        response = self.brain.think(task)
+            # Log the result
+            self.logger.info(f"Cycle complete. Response: {response[:200]}")
 
-        # Log the result
-        self.logger.info(f"Cycle complete. Response: {response[:200]}")
+            event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
 
-        event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
-
-        print(f"\n  {'─' * 50}")
-        print(f"  ✅ Cycle complete")
-        print(f"  {'─' * 50}\n")
+            print(f"\n  {'─' * 50}")
+            print(f"  ✅ Cycle complete")
+            print(f"  {'─' * 50}\n")
+        finally:
+            self._task_lock.release()
 
 
 # ─── Entry Point ─────────────────────────────────────

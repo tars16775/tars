@@ -148,6 +148,9 @@ class TARSBrain:
                     summary_parts.append(f"TARS: {content[:200]}")
         
         self._compacted_summary = "\n".join(summary_parts[-30:])  # Keep last 30 entries
+        # Cap total size to prevent system prompt bloat
+        if len(self._compacted_summary) > 4000:
+            self._compacted_summary = self._compacted_summary[-4000:]
         self.conversation_history = recent
         
         print(f"  📦 Compacted history: {len(old_messages)} old messages → summary, keeping {len(recent)} recent")
@@ -288,17 +291,18 @@ class TARSBrain:
                     print(f"  ⚡ Parallel execution: {', '.join(tc.name for tc in tool_calls)}")
                     with ThreadPoolExecutor(max_workers=min(len(tool_calls), 4)) as pool:
                         futures = {}
+                        start_times = {}
                         for block in tool_calls:
                             event_bus.emit("tool_called", {"tool_name": block.name, "tool_input": block.input})
                             print(f"  🔧 Executing (parallel): {block.name}({block.input})")
+                            start_times[block.id] = time.time()
                             future = pool.submit(self.tool_executor.execute, block.name, block.input)
                             futures[future] = block
 
                         for future in as_completed(futures):
                             block = futures[future]
-                            exec_start = time.time()
+                            exec_duration = time.time() - start_times[block.id]
                             result = future.result()
-                            exec_duration = time.time() - exec_start
 
                             event_bus.emit("tool_result", {
                                 "tool_name": block.name,
@@ -432,6 +436,8 @@ class TARSBrain:
                     summary_parts.append(f"TARS: {content[:200]}")
         
         self._compacted_summary = "\n".join(summary_parts[-40:])
+        if len(self._compacted_summary) > 4000:
+            self._compacted_summary = self._compacted_summary[-4000:]
         self.conversation_history = []
         print(f"  📦 Force-compacted conversation into summary ({len(summary_parts)} entries)")
 

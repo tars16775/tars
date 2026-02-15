@@ -18,6 +18,8 @@ def setup_logger(config, base_dir):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     logger = logging.getLogger("TARS")
+    if logger.handlers:
+        return logger  # Already configured — avoid duplicate handlers
     logger.setLevel(log_level)
 
     # Console handler with colors

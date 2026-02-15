@@ -128,6 +128,11 @@ class TARSServer:
             elif msg_type == "send_task":
                 task = data.get("task", "")
                 if task and self.tars:
+                    # Require passphrase for remote task submission
+                    expected = self.tars.config.get("relay", {}).get("passphrase", "")
+                    if expected and data.get("passphrase") != expected:
+                        await websocket.send(json.dumps({"type": "error", "data": {"message": "Unauthorized: invalid passphrase"}}))
+                        return
                     event_bus.emit("task_received", {"task": task, "source": "dashboard"})
                     # Process in a thread so we don't block
                     threading.Thread(target=self.tars._process_task, args=(task,), daemon=True).start()
@@ -144,13 +149,20 @@ class TARSServer:
             elif msg_type == "update_config":
                 key = data.get("key", "")
                 value = data.get("value")
-                if self.tars and key:
+                # Whitelist: only allow safe config mutations
+                MUTABLE_KEYS = {
+                    "agent.humor_level", "imessage.rate_limit",
+                    "imessage.max_message_length", "safety.max_retries",
+                }
+                if self.tars and key and key in MUTABLE_KEYS:
                     keys = key.split(".")
                     cfg = self.tars.config
                     for k in keys[:-1]:
                         cfg = cfg[k]
                     cfg[keys[-1]] = value
                     event_bus.emit("config_updated", {"key": key, "value": value})
+                elif key not in MUTABLE_KEYS:
+                    await websocket.send(json.dumps({"type": "error", "data": {"message": f"Config key '{key}' is not mutable from dashboard"}}))
 
         except Exception as e:
             await websocket.send(json.dumps({"type": "error", "data": {"message": str(e)}}))

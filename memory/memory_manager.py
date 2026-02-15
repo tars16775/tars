@@ -93,11 +93,20 @@ class MemoryManager:
     # ─── History ─────────────────────────────────────
 
     def log_action(self, action, input_data, result):
-        """Append an action to the history log."""
+        """Append an action to the history log. Auto-rotates at 10MB."""
+        # Rotate if file is too large
+        try:
+            if os.path.exists(self.history_file) and os.path.getsize(self.history_file) > 10_000_000:
+                import time as _t
+                archive = self.history_file + f".{int(_t.time())}.bak"
+                os.rename(self.history_file, archive)
+        except Exception:
+            pass
+
         entry = {
             "ts": datetime.now().isoformat(),
             "action": action,
-            "input": str(input_data)[:500],  # Truncate large inputs
+            "input": str(input_data)[:500],
             "result": str(result)[:500],
             "success": result.get("success", False) if isinstance(result, dict) else True,
         }
@@ -134,7 +143,9 @@ class MemoryManager:
             project_file = os.path.join(self.projects_dir, f"{key}.md")
             self._write(project_file, f"# Project: {key}\n\n{value}\n")
         elif category == "context":
-            self.update_context(f"# Current Context\n\n**{key}**: {value}\n")
+            existing = self._read(self.context_file)
+            existing += f"\n**{key}**: {value}"
+            self._write(self.context_file, existing)
         elif category == "note":
             self.log_action("note", key, {"success": True, "content": value})
         elif category == "credential":
@@ -153,46 +164,56 @@ class MemoryManager:
         return {"success": True, "content": f"Saved to {category}: {key}"}
 
     def recall(self, query):
-        """Search memory for relevant information."""
+        """Search memory for relevant information. Uses token matching."""
         results = []
         query_lower = query.lower()
+        query_tokens = set(query_lower.split())
+
+        def _matches(text):
+            """Check if query or any query token matches text."""
+            text_lower = text.lower()
+            if query_lower in text_lower:
+                return True
+            # Token match: at least half of query tokens found
+            matches = sum(1 for t in query_tokens if t in text_lower)
+            return matches >= max(1, len(query_tokens) // 2)
 
         # Search context
         ctx = self._read(self.context_file)
-        if query_lower in ctx.lower():
+        if _matches(ctx):
             results.append(f"[Context] {ctx[:500]}")
 
         # Search preferences
         prefs = self._read(self.preferences_file)
-        if query_lower in prefs.lower():
+        if _matches(prefs):
             results.append(f"[Preferences] {prefs[:500]}")
 
         # Search project files
         if os.path.exists(self.projects_dir):
             for fname in os.listdir(self.projects_dir):
                 content = self._read(os.path.join(self.projects_dir, fname))
-                if query_lower in content.lower():
+                if _matches(content):
                     results.append(f"[Project: {fname}] {content[:500]}")
 
         # Search credentials
         cred_file = os.path.join(self.base_dir, "memory", "credentials.md")
         if os.path.exists(cred_file):
             creds = self._read(cred_file)
-            if query_lower in creds.lower():
+            if _matches(creds):
                 results.append(f"[Credentials] {creds[:500]}")
 
         # Search learned patterns
         learned_file = os.path.join(self.base_dir, "memory", "learned.md")
         if os.path.exists(learned_file):
             learned = self._read(learned_file)
-            if query_lower in learned.lower():
+            if _matches(learned):
                 results.append(f"[Learned] {learned[:500]}")
 
         # Search recent history
         try:
             with open(self.history_file, "r") as f:
                 for line in f:
-                    if query_lower in line.lower():
+                    if _matches(line):
                         results.append(f"[History] {line.strip()[:200]}")
         except FileNotFoundError:
             pass

@@ -20,8 +20,8 @@ class IMessageReader:
         self._last_message_rowid = self._get_latest_rowid()
 
     def _get_db_connection(self):
-        """Open a read-only connection to chat.db."""
-        return sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        """Open a read-only connection to chat.db with timeout."""
+        return sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=5)
 
     def _get_latest_rowid(self):
         """Get the ROWID of the most recent message."""
@@ -71,10 +71,11 @@ class IMessageReader:
         """
         Block and poll chat.db until a new message arrives from the owner.
         Returns the message text, or None if timed out.
+        
+        NOTE: We do NOT reset _last_message_rowid here. If a message arrived
+        between our last check and now, we WANT to catch it — resetting would
+        permanently skip it.
         """
-        # Update baseline to ignore any messages that arrived before we started waiting
-        self._last_message_rowid = self._get_latest_rowid()
-
         print(f"  📱 Waiting for iMessage reply (timeout: {timeout}s)...")
         start = time.time()
 

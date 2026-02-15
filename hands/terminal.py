@@ -8,10 +8,18 @@ Runs shell commands and captures output.
 
 import subprocess
 import os
+from utils.safety import is_destructive
 
 
 def run_terminal(command, timeout=60, cwd=None):
     """Run a shell command and return the output."""
+    # Safety: block destructive commands
+    if is_destructive(command):
+        return {
+            "success": False,
+            "error": True,
+            "content": f"⛔ BLOCKED: Destructive command detected: {command}\nIf you really need this, ask Abdullah for confirmation via send_imessage.",
+        }
     try:
         result = subprocess.run(
             command,
