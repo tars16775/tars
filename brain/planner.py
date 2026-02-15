@@ -303,9 +303,12 @@ class TARSBrain:
                             print(f"  🔧 Brain: Non-streaming fallback succeeded")
                         except Exception as e2:
                             event_bus.emit("error", {"message": f"LLM API error: {e2}"})
+                            # Try to salvage — send whatever we have via iMessage
+                            self._emergency_notify(str(e2))
                             return f"❌ LLM API error: {e2}"
                 else:
                     event_bus.emit("error", {"message": f"LLM API error: {e}"})
+                    self._emergency_notify(str(e))
                     return f"❌ LLM API error: {e}"
 
             # Process response
@@ -450,6 +453,40 @@ class TARSBrain:
         """Force-compact all history into a summary. Used on conversation timeout."""
         if not self.conversation_history:
             return
+
+    def _emergency_notify(self, error_str):
+        """Last-resort: try to send an iMessage when the brain crashes.
+        
+        Scans conversation history for the last useful result and includes it,
+        so the user gets *something* even when the LLM API fails.
+        """
+        try:
+            # Find any useful content from this conversation
+            partial = ""
+            for msg in reversed(self.conversation_history):
+                content = msg.get("content", "")
+                if msg["role"] == "user" and isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict):
+                            c = str(item.get("content", ""))
+                            if len(c) > 50 and not c.startswith("ERROR") and "✅" in c:
+                                partial = c[:500]
+                                break
+                if partial:
+                    break
+
+            if partial:
+                notify_msg = f"⚠️ Hit a technical snag, but here's what I found so far:\n\n{partial}"
+            elif "leaked" in error_str.lower() or "permission_denied" in error_str.lower():
+                notify_msg = "❌ My API key was revoked. Need a new one in config.yaml before I can work."
+            elif "rate limit" in error_str.lower() or "429" in error_str:
+                notify_msg = "⏳ Rate limited. Send your request again in about a minute."
+            else:
+                notify_msg = "⚠️ Ran into a technical issue. Try sending your request again."
+
+            self.tool_executor.execute("send_imessage", {"message": notify_msg})
+        except Exception:
+            pass  # Absolute last resort — don't crash the crash handler
         
         summary_parts = []
         for msg in self.conversation_history:

@@ -280,6 +280,15 @@ class BrowserAgent:
         # Track success/error metrics to catch hallucinated success
         total_actions = 0
         total_errors = 0
+        
+        # ── Loop detection: track recent actions to prevent repetition ──
+        recent_actions = []  # list of (name, args_hash) tuples
+        LOOP_THRESHOLD = 3  # same action 3 times = force intervention
+
+        # ── Auto-look on first step: always start by seeing the page ──
+        auto_look_needed = True
+        # Track actions that should trigger auto-wait + auto-look
+        NAVIGATION_ACTIONS = {"goto", "click", "key", "select", "solve_captcha", "hold"}
 
         for step in range(1, self.max_steps + 1):
             print(f"  🧠 [Browser Agent] Step {step}/{self.max_steps}...")
@@ -290,6 +299,17 @@ class BrowserAgent:
                 print(f"  🛑 {msg}")
                 self._notify(f"🛑 {msg}")
                 return {"success": False, "content": msg, "steps": step, "stuck": True, "stuck_reason": "Kill switch activated"}
+
+            # ── Auto-look: inject page state before first LLM call ──
+            if auto_look_needed:
+                auto_look_needed = False
+                page_state = act_inspect_page()
+                if page_state:
+                    # Prepend page state so the LLM knows what it's working with
+                    if len(messages) == 1:
+                        messages[0]["content"] += f"\n\n## Current page state (auto-look):\n{page_state[:3000]}"
+                    else:
+                        messages.append({"role": "user", "content": f"Here is the current page state:\n{page_state[:3000]}"})
 
             try:
                 response = self.client.create(
@@ -399,6 +419,25 @@ class BrowserAgent:
                         if name in ("type", "click") and "No visible" in result_str:
                             current_page = act_inspect_page()
                             result_str += f"\n\nHere is what is ACTUALLY on the page right now:\n{current_page[:2000]}\n\nUse ONLY the selectors shown above."
+
+                    # ── Loop detection: same action repeated too many times ──
+                    action_sig = f"{name}:{json.dumps(inp, sort_keys=True)}"
+                    recent_actions.append(action_sig)
+                    # Count how many times this exact action appears in last 6 actions
+                    recent_window = recent_actions[-6:]
+                    repeat_count = recent_window.count(action_sig)
+                    if repeat_count >= LOOP_THRESHOLD:
+                        result_str += f"\n\n⚠️ WARNING: You have tried this EXACT same action {repeat_count} times. It is NOT working. You MUST try a completely different approach, or call 'stuck' if you cannot proceed."
+                        print(f"  ⚠️ Loop detected: {name} repeated {repeat_count}x")
+
+                    # ── Auto-wait after navigation actions ──
+                    # If the action triggers a page change, wait for it to load
+                    if name in NAVIGATION_ACTIONS and not result_str.startswith("ERROR"):
+                        time.sleep(1.5)  # Brief wait for page transition
+                        # Auto-inject fresh page state so LLM sees the new page
+                        fresh_page = act_inspect_page()
+                        if fresh_page:
+                            result_str += f"\n\n## Page after action (auto-look):\n{fresh_page[:2500]}"
 
                     tool_results.append({
                         "type": "tool_result",

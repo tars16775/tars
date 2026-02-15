@@ -202,6 +202,12 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 - `wait_for_reply` — Wait for Abdullah's iMessage response
 - `save_memory` / `recall_memory` — Persistent memory
 - `checkpoint` — Save progress for resume
+- `mac_mail` — Send/read emails using Mac's built-in Mail app. Actions: 'send', 'unread', 'inbox', 'search', 'read'.
+  Example: mac_mail({"action": "send", "to": "user@example.com", "subject": "Hello", "body": "Message here"})
+- `mac_notes` — Create/read Apple Notes. Actions: 'create', 'list', 'search', 'read'.
+- `mac_calendar` — Create/read calendar events. Actions: 'today', 'upcoming', 'create', 'search'.
+- `mac_reminders` — Create/read reminders. Actions: 'add', 'list', 'complete', 'search'.
+- `mac_system` — System controls. Actions: 'info', 'volume', 'brightness', 'sleep', 'screenshot'.
 
 ═══════════════════════════════════════════════════════════
  DEPLOYMENT RULES
@@ -218,7 +224,13 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
  DOMAIN KNOWLEDGE
 ═══════════════════════════════════════════════════════════
 
-### Email Signups
+### Sending Email — USE MAC MAIL (fastest, most reliable)
+- ALWAYS use `mac_mail({"action": "send", "to": "...", "subject": "...", "body": "..."})` to send email.
+- This uses the Mac's built-in Mail app — instant, no browser login needed.
+- NEVER try to log into Gmail/Outlook via browser to send email. That's fragile and slow.
+- To check inbox: `mac_mail({"action": "unread"})` or `mac_mail({"action": "inbox", "count": 10})`
+
+### Email Account Creation (only when user asks to CREATE a new account)
 - Outlook: https://signup.live.com → email → Next → password → Next → name → Next → birthday → Next → CAPTCHA → done
 - Gmail: https://accounts.google.com/signup → name → Next → birthday → Next → email → Next → password → agree
 - ProtonMail: https://account.proton.me/signup → username → password → done

@@ -63,24 +63,6 @@
   ],
   "failure_patterns": [
     {
-      "task": "Go to https://outlook.live.com. Enter 'Essabot6775@outlook.com' in the email field and click next. Then enter the password and click sign in.",
-      "reason": "Unknown reason.",
-      "steps": 5,
-      "timestamp": "2026-02-14T17:55:34.517456"
-    },
-    {
-      "task": "Go to https://signup.live.com and start the account creation process.",
-      "reason": "I have tried using different selectors to locate the email input field, but none of them are working. I have also tried clicking the Next button, but it does not seem to be leading to the email input field. I am unsure of what else to try at this point.",
-      "steps": 9,
-      "timestamp": "2026-02-14T17:56:05.094459"
-    },
-    {
-      "task": "Go to https://accounts.google.com/signup. Type 'Essabot6775@gmail.com' into the email field. Click 'Next'. Wait 2 seconds. Look again. If it shows a 'New email' field, type 'Essabot6775' into that fie",
-      "reason": "Field #Passwd not found. Attempted to use provided selectors, but it was not working. Cannot proceed with password entry.",
-      "steps": 31,
-      "timestamp": "2026-02-14T18:02:40.778366"
-    },
-    {
       "task": "Go to https://proton.me/signup. Click on the 'Create account' button. Enter 'Essabot6775@proton.me' as the email address. Enter 'Essabot2026Pass!' as the password. Enter 'Essabot' as the first name an",
       "reason": "Unknown reason.",
       "steps": 11,
@@ -181,12 +163,30 @@
       "reason": "I attempted to navigate to the MrBeast $1 million puzzle challenge and enter the email address. However, the email field was not visible on the page.",
       "steps": 4,
       "timestamp": "2026-02-15T00:39:16.653550"
+    },
+    {
+      "task": "Go to https://accounts.google.com/signup. Call 'look' to see the page. Type 'tarsitgroup' into the username field shown by look. Click 'Next'. Wait 2 seconds. Look again. If it shows a 'New email' fie",
+      "reason": "I tried filling the first and last name fields, but the page still shows the same fields and does not proceed to the next step. I will try a different approach.",
+      "steps": 6,
+      "timestamp": "2026-02-15T15:19:09.480156"
+    },
+    {
+      "task": "Go to https://www.gmail.com. Type 'tarsitgroup@gmail.com' into the email field. Type 'password' into the password field. Click 'Next'. Compose a new email to tarsitgroup@gmail.com. Type 'Cheapest flig",
+      "reason": "I am unable to proceed with the task as the Sign in page does not provide any visible field for entering the email address.",
+      "steps": 16,
+      "timestamp": "2026-02-15T15:19:44.375681"
+    },
+    {
+      "task": "Go to https://www.gmail.com. Click on the 'Compose' button. Type 'tarsitgroup@gmail.com' into the 'To' field. Type 'Cheapest flights from SLC to Dallas' in the subject field. Type 'The cheapest one-wa",
+      "reason": "I tried various approaches, including clicking on the 'Sign in' button, typing in the username and password fields, clicking on the 'Next' button, and composing an email. However, I was unable to find the 'Compose' button or any fields to type in, and I encountered errors when trying to click on the",
+      "steps": 3,
+      "timestamp": "2026-02-15T15:20:11.789396"
     }
   ],
   "stats": {
-    "total_tasks": 38,
+    "total_tasks": 41,
     "successes": 10,
-    "failures": 28,
-    "total_steps": 517
+    "failures": 31,
+    "total_steps": 542
   }
 }

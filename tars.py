@@ -92,24 +92,42 @@ class TARS:
         self.config = load_config()
         print("  ⚙️  Config loaded")
 
-        # Validate API key
+        # Validate API keys — both brain and agent
+        provider_urls = {
+            "groq": "https://console.groq.com/keys",
+            "together": "https://api.together.xyz/settings/api-keys",
+            "anthropic": "https://console.anthropic.com/settings/keys",
+            "openrouter": "https://openrouter.ai/keys",
+            "openai": "https://platform.openai.com/api-keys",
+            "gemini": "https://aistudio.google.com/apikey",
+        }
+
+        # Validate brain LLM key
+        brain_cfg = self.config.get("brain_llm", {})
+        brain_key = brain_cfg.get("api_key", "")
+        brain_provider = brain_cfg.get("provider", "")
+        if brain_key and not brain_key.startswith("YOUR_"):
+            print(f"  🧠 Brain LLM: {brain_provider}/{brain_cfg.get('model', '?')}")
+        elif brain_provider:
+            url = provider_urls.get(brain_provider, "your provider's dashboard")
+            print(f"\n  ❌ ERROR: Brain API key missing or invalid")
+            print(f"  → Set brain_llm.api_key in config.yaml")
+            print(f"  → Or: export TARS_BRAIN_API_KEY=your_key")
+            print(f"  → Get a key at: {url}\n")
+            sys.exit(1)
+
+        # Validate agent LLM key  
         llm_cfg = self.config["llm"]
         api_key = llm_cfg["api_key"]
         provider = llm_cfg["provider"]
         if not api_key or api_key.startswith("YOUR_"):
-            provider_urls = {
-                "groq": "https://console.groq.com/keys",
-                "together": "https://api.together.xyz/settings/api-keys",
-                "anthropic": "https://console.anthropic.com/settings/keys",
-                "openrouter": "https://openrouter.ai/keys",
-                "openai": "https://platform.openai.com/api-keys",
-            }
             url = provider_urls.get(provider, "your provider's dashboard")
             print(f"\n  ❌ ERROR: Set your {provider} API key in config.yaml")
             print(f"  → Open config.yaml and set llm.api_key")
+            print(f"  → Or: export TARS_AGENT_API_KEY=your_key")
             print(f"  → Get a key at: {url}\n")
             sys.exit(1)
-        print(f"  🤖 LLM provider: {provider}")
+        print(f"  🤖 Agent LLM: {provider}")
 
         # Initialize components
         self.logger = setup_logger(self.config, BASE_DIR)
@@ -318,6 +336,22 @@ class TARS:
                 # Log the result
                 self.logger.info(f"Cycle complete. Response: {response[:200]}")
 
+                # ── Safety net: if brain returned an error, notify user ──
+                if response and (response.startswith("❌") or response.startswith("⚠️")):
+                    self.logger.warning(f"Brain returned error, notifying user: {response[:200]}")
+                    try:
+                        # Extract useful info from the error
+                        if "leaked" in response.lower() or "PERMISSION_DENIED" in response:
+                            self.imessage_sender.send("❌ API key issue — my brain API key needs to be replaced. Let me know when you've updated config.yaml and I'll retry.")
+                        elif "rate limit" in response.lower() or "429" in response:
+                            self.imessage_sender.send("⏳ Hit a rate limit. Give me a minute and send your request again.")
+                        elif "Failed to call a function" in response:
+                            self.imessage_sender.send("⚠️ Had a formatting hiccup with my response. Can you repeat your request? I'll get it right this time.")
+                        else:
+                            self.imessage_sender.send(f"⚠️ Ran into an issue: {response[:300]}")
+                    except Exception:
+                        pass  # Don't crash the loop trying to send error notification
+
                 event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
 
                 print(f"\n  {'─' * 50}")
@@ -326,6 +360,11 @@ class TARS:
             except Exception as e:
                 self.logger.error(f"Task processing error: {e}")
                 print(f"  ⚠️ Task error: {e}")
+                # Notify user about crash so they're not left waiting
+                try:
+                    self.imessage_sender.send(f"⚠️ Something went wrong internally. Error: {str(e)[:200]}. Send your request again.")
+                except Exception:
+                    pass
                 event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
             finally:
                 self._task_queue.task_done()
