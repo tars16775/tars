@@ -229,4 +229,86 @@ TARS_TOOLS = [
             "required": ["path"]
         }
     },
+
+    # ═══════════════════════════════════════
+    #  Direct Mac Control (brain-level, no agent needed)
+    # ═══════════════════════════════════════
+    {
+        "name": "mac_mail",
+        "description": "Quick email operations without deploying an agent. Actions:\n- 'unread' → get unread count\n- 'inbox' → read latest 5 emails\n- 'read' → read specific email by index\n- 'search' → search by keyword\n- 'send' → send an email\n\nExamples:\n  mac_mail('unread')\n  mac_mail('inbox', count=10)\n  mac_mail('send', to='bob@gmail.com', subject='Hi', body='Hello from TARS')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["unread", "inbox", "read", "search", "send"]},
+                "count": {"type": "integer", "description": "Emails to read (inbox action)", "default": 5},
+                "index": {"type": "integer", "description": "Email index (read action)"},
+                "keyword": {"type": "string", "description": "Search keyword (search action)"},
+                "to": {"type": "string", "description": "Recipient (send action)"},
+                "subject": {"type": "string", "description": "Subject (send action)"},
+                "body": {"type": "string", "description": "Body (send action)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "mac_notes",
+        "description": "Quick Apple Notes operations.\n- 'list' → list all notes\n- 'read' → read a note by name\n- 'create' → create a note\n- 'search' → search notes\n\nExamples:\n  mac_notes('list')\n  mac_notes('create', title='Shopping List', body='Milk, eggs, bread')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "read", "create", "search"]},
+                "note_name": {"type": "string", "description": "Note name (read action)"},
+                "title": {"type": "string", "description": "Title (create action)"},
+                "body": {"type": "string", "description": "Body (create action)"},
+                "query": {"type": "string", "description": "Search query (search action)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "mac_calendar",
+        "description": "Quick calendar operations.\n- 'events' → upcoming events\n- 'create' → create event\n\nExamples:\n  mac_calendar('events', days=14)\n  mac_calendar('create', title='Meeting', start='March 1, 2026 2:00 PM', end='March 1, 2026 3:00 PM')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["events", "create"]},
+                "days": {"type": "integer", "description": "Days ahead (events)", "default": 7},
+                "calendar_name": {"type": "string", "description": "Calendar name"},
+                "title": {"type": "string", "description": "Event title (create)"},
+                "start": {"type": "string", "description": "Start date (create)"},
+                "end": {"type": "string", "description": "End date (create)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "mac_reminders",
+        "description": "Quick reminders operations.\n- 'list' → list reminders\n- 'create' → create reminder\n- 'complete' → complete reminder\n\nExamples:\n  mac_reminders('list')\n  mac_reminders('create', title='Buy milk', due='March 1, 2026')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "create", "complete"]},
+                "list_name": {"type": "string", "description": "Reminders list name"},
+                "title": {"type": "string", "description": "Reminder title"},
+                "due": {"type": "string", "description": "Due date (optional)"},
+                "notes": {"type": "string", "description": "Notes (optional)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "mac_system",
+        "description": "Quick system controls — no agent needed.\n- 'volume' → set volume (0-100)\n- 'dark_mode' → toggle dark mode\n- 'notify' → send notification\n- 'clipboard' → read clipboard\n- 'screenshot' → take screenshot\n- 'environment' → full Mac snapshot\n- 'battery' → battery status\n- 'spotlight' → search files\n\nExamples:\n  mac_system('volume', value=50)\n  mac_system('notify', message='Task complete!')\n  mac_system('environment')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["volume", "dark_mode", "notify", "clipboard", "screenshot", "environment", "battery", "spotlight"]},
+                "value": {"type": "integer", "description": "Volume level (volume action)"},
+                "enabled": {"type": "boolean", "description": "Enable/disable (dark_mode action)"},
+                "message": {"type": "string", "description": "Message (notify action)"},
+                "query": {"type": "string", "description": "Search query (spotlight action)"}
+            },
+            "required": ["action"]
+        }
+    },
 ]

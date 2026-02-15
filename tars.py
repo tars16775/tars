@@ -43,6 +43,7 @@ from utils.logger import setup_logger
 from utils.event_bus import event_bus
 from utils.agent_monitor import agent_monitor
 from server import TARSServer
+from hands import mac_control as mac
 
 
 # ─── Banner ──────────────────────────────────────────
@@ -189,6 +190,22 @@ class TARS:
         print(f"  {'─' * 50}\n")
 
         event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
+
+        # ── Environment snapshot on startup ──
+        print("  🌍 Taking environment snapshot...")
+        try:
+            snapshot = mac.get_environment_snapshot()
+            if snapshot.get("success"):
+                self._last_snapshot = snapshot.get("snapshot", {})
+                self.memory.save("context", "startup_environment", snapshot.get("content", ""))
+                apps = snapshot.get("snapshot", {}).get("running_apps", [])
+                print(f"  ✅ Snapshot: {len(apps)} apps running, volume {snapshot.get('snapshot', {}).get('volume', '?')}%")
+            else:
+                self._last_snapshot = {}
+                print("  ⚠️ Snapshot partial — continuing")
+        except Exception as e:
+            self._last_snapshot = {}
+            print(f"  ⚠️ Snapshot skipped: {e}")
 
         # Start task worker thread (processes queue serially)
         worker = threading.Thread(target=self._task_worker, daemon=True)

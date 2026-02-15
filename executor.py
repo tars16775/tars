@@ -37,6 +37,7 @@ from memory.agent_memory import AgentMemory
 from hands.terminal import run_terminal
 from hands.file_manager import read_file
 from hands.browser import act_google as browser_google
+from hands import mac_control as mac
 from utils.event_bus import event_bus
 from utils.agent_monitor import agent_monitor
 
@@ -209,6 +210,18 @@ class ToolExecutor:
             text = browser_google(inp["query"])
             return {"success": True, "content": text if isinstance(text, str) else str(text)}
 
+        # ─── Direct Mac Control (brain-level) ──
+        elif tool_name == "mac_mail":
+            return self._mac_mail(inp)
+        elif tool_name == "mac_notes":
+            return self._mac_notes(inp)
+        elif tool_name == "mac_calendar":
+            return self._mac_calendar(inp)
+        elif tool_name == "mac_reminders":
+            return self._mac_reminders(inp)
+        elif tool_name == "mac_system":
+            return self._mac_system(inp)
+
         else:
             return {"success": False, "error": True, "content": f"Unknown tool: {tool_name}"}
 
@@ -216,21 +229,26 @@ class ToolExecutor:
         """
         Phase 2: Environmental Awareness
         Scan the current Mac state so the brain can make informed decisions.
+        Uses mac_control for comprehensive snapshots.
         """
         results = []
         check_set = set(checks)
         do_all = "all" in check_set
 
-        # ── Running applications ──
-        if do_all or "apps" in check_set:
+        # ── Full Mac snapshot (if all requested) ──
+        if do_all:
             try:
-                r = subprocess.run(
-                    ["osascript", "-e",
-                     'tell application "System Events" to get name of every process whose background only is false'],
-                    capture_output=True, text=True, timeout=10
-                )
-                apps = r.stdout.strip()
-                results.append(f"## Running Apps\n{apps}")
+                snap = mac.get_environment_snapshot()
+                if snap.get("success"):
+                    results.append(snap["content"])
+            except Exception as e:
+                results.append(f"## Mac Snapshot\n⚠️ Error: {e}")
+
+        # ── Running applications ──
+        if not do_all and "apps" in check_set:
+            try:
+                r = mac.get_running_apps()
+                results.append(f"## Running Apps\n{r.get('content', 'unknown')}")
             except Exception as e:
                 results.append(f"## Running Apps\n⚠️ Could not check: {e}")
 
@@ -461,6 +479,102 @@ class ToolExecutor:
             "success": True,
             "content": f"💾 Checkpoint saved.\nCompleted: {completed}\nRemaining: {remaining}\nDeployments used: {len(self._deployment_log)}/{self.max_deployments}"
         }
+
+    # ─────────────────────────────────────────────
+    #  Direct Mac Control (brain-level tools)
+    # ─────────────────────────────────────────────
+
+    def _mac_mail(self, inp):
+        """Handle mac_mail brain tool — direct Mail.app control."""
+        action = inp["action"]
+        try:
+            if action == "unread":
+                return mac.mail_unread_count()
+            elif action == "inbox":
+                return mac.mail_read_inbox(inp.get("count", 5))
+            elif action == "read":
+                return mac.mail_read_message(inp.get("index", 1))
+            elif action == "search":
+                return mac.mail_search(inp.get("keyword", ""))
+            elif action == "send":
+                return mac.mail_send(inp["to"], inp["subject"], inp["body"])
+            return {"success": False, "error": True, "content": f"Unknown mail action: {action}"}
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Mail error: {e}"}
+
+    def _mac_notes(self, inp):
+        """Handle mac_notes brain tool — direct Apple Notes control."""
+        action = inp["action"]
+        try:
+            if action == "list":
+                return mac.notes_list()
+            elif action == "read":
+                return mac.notes_read(inp.get("note_name", ""))
+            elif action == "create":
+                return mac.notes_create(inp["title"], inp["body"], inp.get("folder", "Notes"))
+            elif action == "search":
+                return mac.notes_search(inp.get("query", ""))
+            return {"success": False, "error": True, "content": f"Unknown notes action: {action}"}
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Notes error: {e}"}
+
+    def _mac_calendar(self, inp):
+        """Handle mac_calendar brain tool — direct Calendar control."""
+        action = inp["action"]
+        try:
+            if action == "events":
+                return mac.calendar_events(inp.get("calendar_name"), inp.get("days", 7))
+            elif action == "create":
+                return mac.calendar_create_event(
+                    inp["title"], inp["start"], inp["end"],
+                    inp.get("calendar_name", "Calendar")
+                )
+            return {"success": False, "error": True, "content": f"Unknown calendar action: {action}"}
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Calendar error: {e}"}
+
+    def _mac_reminders(self, inp):
+        """Handle mac_reminders brain tool — direct Reminders control."""
+        action = inp["action"]
+        try:
+            if action == "list":
+                return mac.reminders_list(inp.get("list_name"))
+            elif action == "create":
+                return mac.reminders_create(
+                    inp["title"], inp.get("list_name", "Reminders"),
+                    inp.get("due"), inp.get("notes")
+                )
+            elif action == "complete":
+                return mac.reminders_complete(
+                    inp["title"], inp.get("list_name", "Reminders")
+                )
+            return {"success": False, "error": True, "content": f"Unknown reminders action: {action}"}
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Reminders error: {e}"}
+
+    def _mac_system(self, inp):
+        """Handle mac_system brain tool — direct system controls."""
+        action = inp["action"]
+        try:
+            if action == "volume":
+                return mac.set_volume(inp.get("value", 50))
+            elif action == "dark_mode":
+                return mac.set_dark_mode(inp.get("enabled", True))
+            elif action == "notify":
+                return mac.notify(inp.get("message", "TARS notification"))
+            elif action == "clipboard":
+                return mac.clipboard_read()
+            elif action == "screenshot":
+                return mac.take_screenshot()
+            elif action == "environment":
+                return mac.get_environment_snapshot()
+            elif action == "battery":
+                return mac.get_battery()
+            elif action == "spotlight":
+                return mac.spotlight_search(inp.get("query", ""))
+            return {"success": False, "error": True, "content": f"Unknown system action: {action}"}
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"System error: {e}"}
 
     def _deploy_agent(self, agent_type, task):
         """
