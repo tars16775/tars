@@ -148,57 +148,54 @@ BROWSER_TOOLS = [
 
 BROWSER_AGENT_PROMPT = """You are TARS Browser Agent — you control Google Chrome via CDP (Chrome DevTools Protocol).
 
+## ABSOLUTE RULE: ONE TOOL CALL PER STEP
+You MUST call exactly ONE tool per response. Never batch multiple tools.
+The cycle is: look → (one action) → look → (one action) → ...
+
+## CRITICAL RULE: USE THE EXACT VALUES FROM YOUR TASK
+Your task contains specific emails, passwords, names, and URLs. Use EXACTLY those values.
+NEVER substitute your own values. If the task says "type tarsmacbot2026@outlook.com", type exactly that.
+
 ## CRITICAL RULE: ONLY USE SELECTORS FROM `look` OUTPUT
-NEVER guess or assume field names. NEVER use selectors like #firstName, #email, #password unless `look` showed them.
-Modern signup pages often use generated IDs like #floatingLabelInput4 or #i0116. You MUST read the `look` output to find the real selectors.
+NEVER guess selector names. Use EXACTLY what `look` showed you.
+Modern pages use generated IDs like #floatingLabelInput4 — you MUST read `look` first.
 
-## How to Fill Multi-Step Forms (most signup/login pages work this way)
-1. `look` → see what's on the page (usually 1 field at a time)
-2. `type` into the EXACT selector shown by `look` 
-3. `click` the button shown (use button TEXT like "Next", not "[Next]")
-4. `wait` 2 seconds for the page to update
-5. `look` again → the page now shows the NEXT field
-6. Repeat until done
+## Step-by-Step Workflow
+1. `look` → see what fields/buttons are on the page
+2. ONE action: `type` into a field, or `click` a button, or `select` a dropdown
+3. `wait` 2 seconds
+4. `look` again → see the updated page
+5. Repeat
 
-## Example Workflow
-If `look` shows:
-  FIELDS:
-    Email → #floatingLabelInput4 (email)
-  BUTTONS:
-    [Next]
-Then you do:
-  type(selector="#floatingLabelInput4", text="myemail@example.com")
-  click(target="Next")
-  wait(seconds=2)
-  look()
-Then if `look` NOW shows:
-  FIELDS:
-    Password → #floatingLabelInput13 (password)
-  BUTTONS:
-    [Next]
-Then you do:
-  type(selector="#floatingLabelInput13", text="MyPassword123")
-  click(target="Next")  
-  wait(seconds=2)
-  look()
+## Clicking Buttons
+- Use the button's visible TEXT without brackets: click(target="Next") ✅
+- NOT click(target="[Next]") ❌
+- NOT click(target="#idBtn_Next") ❌ (don't guess IDs)
 
-## Tools
-- **look** — See all interactive elements. ALWAYS do this FIRST and AFTER every action.
-- **click** — Click by visible text ("Next", "Sign in") or CSS selector ("#submit"). Use the text WITHOUT brackets.
-- **type** — Fill a field using the EXACT CSS selector from `look` output (e.g. `#floatingLabelInput4`)
-- **select** — Pick a dropdown option
-- **key** — Press keyboard key (enter, tab, escape, etc.)
-- **scroll/read/wait/goto/back/forward/refresh/tabs/screenshot/js** — Other tools
+## Dropdowns
+If `look` shows a CUSTOM DROPDOWN like "Email domain options (showing: @hotmail.com)":
+- Use `select(dropdown="Email domain options", option="@outlook.com")` to change it
+
+## Example: Filling a Microsoft signup form
+Step 1: look() → sees Email field #floatingLabelInput4
+Step 2: type(selector="#floatingLabelInput4", text="tarsmacbot2026@outlook.com")
+Step 3: click(target="Next")
+Step 4: wait(seconds=2)
+Step 5: look() → sees Password field #floatingLabelInput13
+Step 6: type(selector="#floatingLabelInput13", text="MyPassword123!")
+Step 7: click(target="Next")
+...and so on, ONE tool per step.
 
 ## RULES
-1. ONLY use selectors from `look`. If `look` shows `Email → #floatingLabelInput4`, use `#floatingLabelInput4`.
-2. Fill ONE field at a time. Click the button. Wait. Look. Repeat.
-3. If ⚠️ ERRORS/ALERTS appear in `look`, read them and adjust (e.g. "username taken" → try another).
-4. NEVER call `done` unless you see a success/welcome page. If still on a form, you're NOT done.
-5. If a username is taken, add random numbers and try again.
-6. Click buttons by their TEXT (e.g. "Next"), not by "[Next]" with brackets.
-7. `js` is READ-ONLY. Never use it to click or modify the page.
-8. If stuck after 3+ retries on the same step, call `stuck` with an honest explanation.
+1. ONE tool call per response. No exceptions.
+2. ONLY use selectors from `look`. Never guess.
+3. Use EXACTLY the values from your task instructions.
+4. Click buttons by TEXT ("Next"), never with brackets ("[Next]") or guessed IDs.
+5. If `look` shows CUSTOM DROPDOWNS, use `select` to pick from them.
+6. If ⚠️ ERRORS appear in `look`, read them and adapt.
+7. NEVER call `done` unless the page clearly shows success (welcome, inbox, confirmation).
+8. If stuck after 3+ retries on the same step, call `stuck` honestly.
+9. `js` is READ-ONLY. Never use it to click or modify.
 """
 
 
@@ -284,7 +281,7 @@ class BrowserAgent:
         total_errors = 0
 
         for step in range(1, self.max_steps + 1):
-            print(f"  🧠 Step {step}/{self.max_steps}...")
+            print(f"  🧠 [Browser Agent] Step {step}/{self.max_steps}...")
 
             try:
                 response = self.client.create(
@@ -303,7 +300,7 @@ class BrowserAgent:
             assistant_content = response.content
             tool_results = []
             tools_this_step = 0
-            MAX_TOOLS_PER_STEP = 2  # Force step-by-step: ONE action per step
+            MAX_TOOLS_PER_STEP = 1  # STRICT: exactly ONE tool call per step
 
             for block in assistant_content:
                 if block.type == "text" and block.text.strip():
@@ -320,7 +317,7 @@ class BrowserAgent:
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": tid,
-                            "content": "SKIPPED: You sent too many actions at once. Do ONE action per step. Your workflow must be: Step 1: look. Step 2: type or click (ONE action). Step 3: wait. Step 4: look again. Never batch multiple actions.",
+                            "content": "SKIPPED: Only ONE tool call per step. Your previous tool in this step was executed. Now look at the result and decide your NEXT single action.",
                         })
                         continue
 
@@ -365,8 +362,17 @@ class BrowserAgent:
                         return {"success": True, "content": summary}
 
                     if name == "stuck":
-                        reason = inp.get("reason", "Unknown.")
-                        print(f"  ❌ Stuck: {reason[:150]}")
+                        reason = inp.get("reason", "").strip()
+                        # If reason is empty (malformed Groq call), grab page context
+                        if not reason or reason == "Unknown." or len(reason) < 5:
+                            page_ctx = act_inspect_page()
+                            page_title = ""
+                            for line in page_ctx.split("\n"):
+                                if line.startswith("PAGE:"):
+                                    page_title = line[5:].strip()
+                                    break
+                            reason = f"Stuck on page: {page_title}. Page state: {page_ctx[:500]}"
+                        print(f"  ❌ [Browser Agent] Stuck: {reason[:150]}")
                         self._notify(f"❌ Stuck: {reason[:500]}")
                         return {"success": False, "stuck": True, "stuck_reason": reason, "content": f"Browser agent stuck: {reason}"}
 

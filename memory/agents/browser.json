@@ -1,1 +1,54 @@
-{"success_patterns": [], "failure_patterns": [], "stats": {"total_tasks": 0, "successes": 0, "failures": 0, "total_steps": 0}}
+{
+  "success_patterns": [
+    {
+      "task": "Go to https://signup.live.com and enter the email address 'tarsmacbot2026@outlook.com' into the email field, then click the 'Next' button.",
+      "summary": "Went to https://signup.live.com, filled email field with 'tarsmacbot2026@outlook.com', and clicked 'Next'",
+      "steps": 10,
+      "timestamp": "2026-02-14T17:12:26.751641"
+    },
+    {
+      "task": "Enter the password 'TarsBot2026Pass!' into the password field, then click the 'Next' button.",
+      "summary": "Done.",
+      "steps": 3,
+      "timestamp": "2026-02-14T17:12:31.320985"
+    },
+    {
+      "task": "Go to https://signup.live.com and enter 'tarsmacbot2026@outlook.com' into the email field, then click Next. If a CAPTCHA appears, stop and send an iMessage to Abdullah saying 'CAPTCHA encountered, ple",
+      "summary": "Went to https://signup.live.com, entered email address 'tarsmacbot2026@outlook.com', clicked Next",
+      "steps": 9,
+      "timestamp": "2026-02-14T17:15:01.942650"
+    },
+    {
+      "task": "Continue from where we left off, enter 'TarsBot2026Pass!' into the password field, then click Next. If a CAPTCHA appears, stop and send an iMessage to Abdullah saying 'CAPTCHA encountered, please solv",
+      "summary": "Entered 'TarsBot2026Pass!' into the password field, clicked Next, then filled in first name and last name fields before clicking next again.",
+      "steps": 16,
+      "timestamp": "2026-02-14T17:15:29.307576"
+    }
+  ],
+  "failure_patterns": [
+    {
+      "task": "Go to https://signup.live.com. Type 'tarsmacbot2026@outlook.com' into the email field. Click 'Next'. Wait 2 seconds. Look for the password field and type 'TarsBot2026Pass!' into it. Click 'Next'. Fill",
+      "reason": "Unknown reason.",
+      "steps": 27,
+      "timestamp": "2026-02-14T17:12:02.089121"
+    },
+    {
+      "task": "After the account is created, go to https://outlook.live.com. Click on the 'New message' button. Type 'tarsitgroup@outlook.com' into the 'To' field. Type 'Account Created' into the subject field. Type",
+      "reason": "Unable to complete the task due to the inability to sign in to the account. The account creation process did not complete successfully.",
+      "steps": 14,
+      "timestamp": "2026-02-14T17:12:15.594644"
+    },
+    {
+      "task": "Go to https://signup.live.com. Type 'tarsmacbot2026@outlook.com' into the email field, click Next, type 'TarsBot2026Pass!' into the password field, click Next, type 'Tars' into the first name field, t",
+      "reason": "Unknown reason.",
+      "steps": 30,
+      "timestamp": "2026-02-14T17:14:37.007872"
+    }
+  ],
+  "stats": {
+    "total_tasks": 7,
+    "successes": 4,
+    "failures": 3,
+    "total_steps": 109
+  }
+}

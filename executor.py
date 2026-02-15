@@ -38,7 +38,7 @@ AGENT_CLASSES = {
 }
 
 # Hard limit: max agent deployments per brain task cycle
-MAX_DEPLOYMENTS_PER_TASK = 6
+MAX_DEPLOYMENTS_PER_TASK = 8
 
 
 class ToolExecutor:
