@@ -53,6 +53,16 @@ DESTRUCTIVE_PATTERNS = [
     r"python.*-c.*import\s+os.*system",
     # Fork bombs / resource exhaustion  
     r":\(\)\{\s*:\|",                    # bash fork bomb
+    # Additional dangerous patterns
+    r"find\s+.*-delete",
+    r"find\s+.*-exec\s+rm",
+    r"xargs\s+rm",
+    r"perl\s+-e\s+.*unlink",
+    r"python.*-c.*os\.(remove|unlink|rmdir|rmtree)",
+    r"`[^`]*rm\s",                       # backtick substitution with rm
+    r"\$\([^)]*rm\s",                    # $() substitution with rm
+    r"crontab\s+-r",                     # remove all cron jobs
+    r"networksetup\s+-setdnsservers",    # DNS hijack
 ]
 
 

@@ -43,19 +43,24 @@ class IMessageSender:
         end run
         '''
 
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script, message],
-                capture_output=True, text=True, timeout=15
-            )
-            self._last_sent_time = time.time()
+        last_err = None
+        for attempt in range(3):
+            try:
+                result = subprocess.run(
+                    ["osascript", "-e", script, message],
+                    capture_output=True, text=True, timeout=15
+                )
+                self._last_sent_time = time.time()
 
-            if result.returncode == 0:
-                return {"success": True, "content": f"iMessage sent to {self.phone}"}
-            else:
-                return {
-                    "success": False, "error": True,
-                    "content": f"iMessage failed: {result.stderr.strip()}"
-                }
-        except Exception as e:
-            return {"success": False, "error": True, "content": f"iMessage error: {e}"}
+                if result.returncode == 0:
+                    return {"success": True, "content": f"iMessage sent to {self.phone}"}
+                else:
+                    last_err = result.stderr.strip()
+            except Exception as e:
+                last_err = str(e)
+
+            # Backoff before retry (0.5s, 1.5s)
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+
+        return {"success": False, "error": True, "content": f"iMessage failed after 3 attempts: {last_err}"}

@@ -190,8 +190,11 @@ class TARSServer:
                 task = data.get("task", "")
                 if task and self.tars:
                     # Require passphrase for remote task submission
-                    expected = self.tars.config.get("relay", {}).get("passphrase", "")
-                    if expected and data.get("passphrase") != expected:
+                    expected = (self.tars.config.get("relay", {}).get("passphrase") or "").strip()
+                    if not expected:
+                        await websocket.send(json.dumps({"type": "error", "data": {"message": "Rejected: relay passphrase not configured"}}))
+                        return
+                    if data.get("passphrase") != expected:
                         await websocket.send(json.dumps({"type": "error", "data": {"message": "Unauthorized: invalid passphrase"}}))
                         return
                     event_bus.emit("task_received", {"task": task, "source": "dashboard"})
@@ -204,8 +207,11 @@ class TARSServer:
 
             elif msg_type == "kill":
                 # Require passphrase for kill from dashboard
-                expected = self.tars.config.get("relay", {}).get("passphrase", "") if self.tars else ""
-                if expected and data.get("passphrase") != expected:
+                expected = ((self.tars.config.get("relay", {}).get("passphrase") or "").strip()) if self.tars else ""
+                if not expected:
+                    await websocket.send(json.dumps({"type": "error", "data": {"message": "Rejected: relay passphrase not configured"}}))
+                    return
+                if data.get("passphrase") != expected:
                     await websocket.send(json.dumps({"type": "error", "data": {"message": "Unauthorized: invalid passphrase"}}))
                     return
                 event_bus.emit("kill_switch", {"source": "dashboard"})

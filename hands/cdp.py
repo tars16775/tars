@@ -199,7 +199,14 @@ class CDP:
                 break
             except Exception:
                 break
+        # Clean up dead connection so _ensure() re-connects next call
         self._running = False
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
 
     # ─── Events ────────────────────────────────────────
 

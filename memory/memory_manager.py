@@ -134,34 +134,59 @@ class MemoryManager:
     # ─── Save/Recall (for Claude tool calls) ─────────
 
     def save(self, category, key, value):
-        """Save a memory entry."""
+        """Save a memory entry. Uses key-based dedup (updates existing, not appends)."""
         if category == "preference":
-            prefs = self._read(self.preferences_file)
-            prefs += f"\n- **{key}**: {value}"
-            self._write(self.preferences_file, prefs)
+            self._upsert_entry(self.preferences_file, key, value, "# TARS — Abdullah's Preferences\n")
         elif category == "project":
             project_file = os.path.join(self.projects_dir, f"{key}.md")
             self._write(project_file, f"# Project: {key}\n\n{value}\n")
         elif category == "context":
-            existing = self._read(self.context_file)
-            existing += f"\n**{key}**: {value}"
-            self._write(self.context_file, existing)
+            self._upsert_entry(self.context_file, key, value, "# TARS — Current Context\n")
         elif category == "note":
             self.log_action("note", key, {"success": True, "content": value})
         elif category == "credential":
-            # Save credentials securely to a dedicated file
             cred_file = os.path.join(self.base_dir, "memory", "credentials.md")
-            existing = self._read(cred_file) if os.path.exists(cred_file) else "# Saved Credentials\n"
-            existing += f"\n- **{key}**: {value}"
-            self._write(cred_file, existing)
+            self._upsert_entry(cred_file, key, value, "# Saved Credentials\n")
         elif category == "learned":
-            # Save learned patterns for future tasks
             learned_file = os.path.join(self.base_dir, "memory", "learned.md")
-            existing = self._read(learned_file) if os.path.exists(learned_file) else "# Learned Patterns\n"
-            existing += f"\n- **{key}**: {value}"
-            self._write(learned_file, existing)
+            self._upsert_entry(learned_file, key, value, "# Learned Patterns\n")
 
         return {"success": True, "content": f"Saved to {category}: {key}"}
+
+    def _upsert_entry(self, filepath, key, value, default_header=""):
+        """Update existing key in a markdown file, or append if new.
+        
+        Prevents unbounded growth by:
+          1. Replacing existing **key**: ... lines (dedup)
+          2. Capping total file size at 50KB
+        """
+        import re
+        
+        existing = self._read(filepath) if os.path.exists(filepath) else default_header
+        
+        # Pattern: - **key**: ...  (match the entire line)
+        pattern = re.compile(r'^- \*\*' + re.escape(key) + r'\*\*:.*$', re.MULTILINE)
+        new_line = f"- **{key}**: {value}"
+        
+        if pattern.search(existing):
+            # Update in place
+            updated = pattern.sub(new_line, existing)
+        else:
+            # Append
+            updated = existing.rstrip() + f"\n{new_line}"
+        
+        # Cap file size at 50KB — trim oldest entries if exceeded
+        if len(updated.encode('utf-8')) > 50_000:
+            lines = updated.split('\n')
+            # Keep header (first 2 lines) + last entries that fit
+            header = '\n'.join(lines[:2])
+            body_lines = lines[2:]
+            # Remove oldest entries (from the front) until under limit
+            while body_lines and len(('\n'.join([header] + body_lines)).encode('utf-8')) > 50_000:
+                body_lines.pop(0)
+            updated = header + '\n' + '\n'.join(body_lines)
+        
+        self._write(filepath, updated)
 
     def recall(self, query):
         """Search memory for relevant information. Uses token matching."""

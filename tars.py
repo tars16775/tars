@@ -158,8 +158,18 @@ class TARS:
         signal.signal(signal.SIGTERM, self._shutdown)
 
     def _shutdown(self, *args):
-        """Graceful shutdown."""
+        """Graceful shutdown — stops agents, drains queue, then exits."""
         print("\n\n  🛑 TARS shutting down...")
+
+        # Signal all running agents to stop
+        self._kill_event.set()
+        self.running = False
+
+        # Wait for current task to finish (up to 10s)
+        try:
+            self._task_queue.join()  # blocks until task_done() called
+        except Exception:
+            pass
 
         # Print session summary from self-improvement engine
         if hasattr(self.executor, 'self_improve'):
@@ -167,7 +177,6 @@ class TARS:
             if summary:
                 print(f"\n{summary}\n")
 
-        self.running = False
         self.memory.update_context(
             f"# TARS — Last Session\n\nShutdown at {datetime.now().isoformat()}\n"
         )
@@ -282,11 +291,12 @@ class TARS:
                 )
                 progress_collector.start()
 
-                # Send to brain — it classifies and handles everything
-                response = self.brain.think(task)
-
-                # Stop progress updates, send any remaining
-                progress_collector.stop()
+                # Send to brain — wrapped in try/finally so progress
+                # collector is ALWAYS cleaned up, even on crash
+                try:
+                    response = self.brain.think(task)
+                finally:
+                    progress_collector.stop()
 
                 # Log the result
                 self.logger.info(f"Cycle complete. Response: {response[:200]}")

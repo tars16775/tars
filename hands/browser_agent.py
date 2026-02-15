@@ -289,7 +289,7 @@ class BrowserAgent:
                 msg = f"Browser Agent killed by user at step {step}."
                 print(f"  🛑 {msg}")
                 self._notify(f"🛑 {msg}")
-                return {"success": False, "content": msg}
+                return {"success": False, "content": msg, "steps": step, "stuck": True, "stuck_reason": "Kill switch activated"}
 
             try:
                 response = self.client.create(
@@ -303,7 +303,7 @@ class BrowserAgent:
                 err = f"API error: {e}"
                 print(f"  ❌ {err}")
                 self._notify(f"❌ {err[:200]}")
-                return {"success": False, "content": err}
+                return {"success": False, "content": err, "steps": step, "stuck": True, "stuck_reason": err}
 
             assistant_content = response.content
             tool_results = []
@@ -367,7 +367,7 @@ class BrowserAgent:
                             continue
                         print(f"  ✅ Done: {summary[:150]}")
                         self._notify(f"✅ Done: {summary[:500]}")
-                        return {"success": True, "content": summary}
+                        return {"success": True, "content": summary, "steps": step}
 
                     if name == "stuck":
                         reason = inp.get("reason", "").strip()
@@ -382,7 +382,7 @@ class BrowserAgent:
                             reason = f"Stuck on page: {page_title}. Page state: {page_ctx[:500]}"
                         print(f"  ❌ [Browser Agent] Stuck: {reason[:150]}")
                         self._notify(f"❌ Stuck: {reason[:500]}")
-                        return {"success": False, "stuck": True, "stuck_reason": reason, "content": f"Browser agent stuck: {reason}"}
+                        return {"success": False, "stuck": True, "stuck_reason": reason, "content": f"Browser agent stuck: {reason}", "steps": step}
 
                     # Execute
                     inp_short = json.dumps(inp)[:100]
@@ -429,4 +429,4 @@ class BrowserAgent:
         msg = f"Reached {self.max_steps} steps. Task may be partially complete."
         print(f"  ⏱️ {msg}")
         self._notify(f"⏱️ {msg}")
-        return {"success": False, "content": msg}
+        return {"success": False, "content": msg, "steps": self.max_steps, "stuck": True, "stuck_reason": f"Hit max steps ({self.max_steps})"}

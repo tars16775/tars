@@ -87,9 +87,10 @@ class IMessageReader:
         while time.time() - start < timeout:
             messages = self._get_new_messages()
             if messages:
-                # Return the latest message
-                reply = messages[-1]["text"]
-                print(f"  📱 Received reply: {reply[:80]}...")
+                # Concatenate all messages so none are lost when multiple
+                # arrive during a single poll interval
+                reply = "\n".join(m["text"] for m in messages)
+                print(f"  📱 Received reply ({len(messages)} msg(s)): {reply[:80]}...")
                 return {"success": True, "content": reply}
 
             time.sleep(self.poll_interval)
