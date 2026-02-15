@@ -35,13 +35,25 @@
       "summary": "The cheapest one-way flights from SLC to Dallas this month are available for as low as $74-$110 on budget carriers like Southwest, Frontier, and American Airlines. The cheapest one-way flights from SLC to Dallas this month on Southwest are available for as low as $110 for travel this month.",
       "steps": 3,
       "timestamp": "2026-02-15T15:18:51.978477"
+    },
+    {
+      "task": "Research how to use the API key 'AIzaSyDXpEzE_spFRKOKOIW9ZO8Eu3pQSZkB8fY' to find the cheapest flights from SLC to Dallas",
+      "summary": "The cheapest flights from SLC to Dallas start at $56 for one-way and $110 for round-trip according to Travelocity and Expedia.",
+      "steps": 5,
+      "timestamp": "2026-02-15T15:31:04.035793"
+    },
+    {
+      "task": "Find at least 30 cheap flights from SLC to Dallas in February, sorted from lowest to highest price, using any airline",
+      "summary": "The cheapest flights from SLC to Dallas can be found on Frontier Airlines, with prices often under $100 round-trip. The cheapest month to fly is April, with an average price of $50. Some examples of cheap flights include: $55 one-way and $110 round-trip on Expedia, $42 one-way on Skyscanner, and $56",
+      "steps": 7,
+      "timestamp": "2026-02-15T15:40:57.412825"
     }
   ],
   "failure_patterns": [],
   "stats": {
-    "total_tasks": 6,
-    "successes": 6,
+    "total_tasks": 8,
+    "successes": 8,
     "failures": 0,
-    "total_steps": 32
+    "total_steps": 44
   }
 }

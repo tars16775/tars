@@ -63,30 +63,6 @@
   ],
   "failure_patterns": [
     {
-      "task": "Go to https://proton.me/signup. Click on the 'Create account' button. Enter 'Essabot6775@proton.me' as the email address. Enter 'Essabot2026Pass!' as the password. Enter 'Essabot' as the first name an",
-      "reason": "Unknown reason.",
-      "steps": 11,
-      "timestamp": "2026-02-14T18:04:57.480925"
-    },
-    {
-      "task": "Go to https://proton.me/signup",
-      "reason": "I'm stuck because I don't see any fields to enter the email address for creating a new Proton account as intended by the task. The 'Use your current email instead' button was clicked as per the last action but it led to an unexpected page without the expected field for entering the email address.",
-      "steps": 11,
-      "timestamp": "2026-02-14T18:05:09.768745"
-    },
-    {
-      "task": "Go to https://www.tutanota.com/signup",
-      "reason": "Unknown reason.",
-      "steps": 12,
-      "timestamp": "2026-02-14T18:05:36.562155"
-    },
-    {
-      "task": "Go to https://signup.live.com. Type 'Essabot6775@outlook.com' into the email field. Click 'Next'. Wait 2 seconds. Look again. If it shows a 'New email' field, type 'Essabot6775' into that field, then ",
-      "reason": "Unknown reason.",
-      "steps": 10,
-      "timestamp": "2026-02-14T18:06:08.106529"
-    },
-    {
       "task": "Go to https://www.yandex.com/register. Click on the 'Create account' button.",
       "reason": "The task was to go to https://www.yandex.com/register and click on the 'Create account' button. However, after navigating to the page, the 'Create account' button was not found. The agent attempted to click on different elements such as 'Profile, not logged in', 'All', 'Mail', but none of them led t",
       "steps": 15,
@@ -181,12 +157,36 @@
       "reason": "I tried various approaches, including clicking on the 'Sign in' button, typing in the username and password fields, clicking on the 'Next' button, and composing an email. However, I was unable to find the 'Compose' button or any fields to type in, and I encountered errors when trying to click on the",
       "steps": 3,
       "timestamp": "2026-02-15T15:20:11.789396"
+    },
+    {
+      "task": "Go to https://mail.google.com. Click on the 'Compose' button. Type 'tarsitgroup@gmail.com' into the 'To' field. Type 'Cheapest flights from SLC to Dallas' in the subject field. Type 'The cheapest one-",
+      "reason": "Unknown reason.",
+      "steps": 26,
+      "timestamp": "2026-02-15T15:35:53.623619"
+    },
+    {
+      "task": "Go to https://mail.google.com. Click on the 'Compose' button. Type 'tarsitgroup@outlook.com' into the 'To' field. Type 'Full Detailed Report: Cheap Flights from SLC to Dallas in February' in the subje",
+      "reason": "I attempted to navigate to the Gmail inbox and click on the 'Compose' button, but it was not found on the page. I tried waiting for the text 'Compose' to appear for 10 seconds, but it did not. I will try a different approach.",
+      "steps": 16,
+      "timestamp": "2026-02-15T15:45:04.857675"
+    },
+    {
+      "task": "Go to https://mail.google.com. Click on the 'Compose' button. Type 'tarsitgroup@outlook.com' into the 'To' field. Type 'Full Detailed Report: Cheap Flights from SLC to Dallas in February' in the subje",
+      "reason": "Unknown reason.",
+      "steps": 12,
+      "timestamp": "2026-02-15T15:45:36.986525"
+    },
+    {
+      "task": "Go to https://outlook.live.com. Sign in with the credentials. Go to the 'Sent' folder. Check if the email with the subject 'Full Detailed Report: Cheap Flights from SLC to Dallas in February' is prese",
+      "reason": "Unable to access the Sent folder and verify the presence of the email with the subject 'Full Detailed Report: Cheap Flights from SLC to Dallas in February'. The page did not load correctly after signing in and the Sent folder was not found.",
+      "steps": 6,
+      "timestamp": "2026-02-15T15:49:36.429918"
     }
   ],
   "stats": {
-    "total_tasks": 41,
+    "total_tasks": 45,
     "successes": 10,
-    "failures": 31,
-    "total_steps": 542
+    "failures": 35,
+    "total_steps": 602
   }
 }

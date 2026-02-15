@@ -271,8 +271,11 @@ class TARSBrain:
                 })
 
             except Exception as e:
-                # Try to recover from Groq tool_use_failed
                 error_str = str(e)
+                error_type = type(e).__name__
+                print(f"  ⚠️ Brain streaming error ({error_type}): {error_str[:200]}")
+
+                # Try to recover from Groq tool_use_failed
                 if "tool_use_failed" in error_str:
                     recovered = _parse_failed_tool_call(e)
                     if recovered:
@@ -303,13 +306,39 @@ class TARSBrain:
                             print(f"  🔧 Brain: Non-streaming fallback succeeded")
                         except Exception as e2:
                             event_bus.emit("error", {"message": f"LLM API error: {e2}"})
-                            # Try to salvage — send whatever we have via iMessage
                             self._emergency_notify(str(e2))
                             return f"❌ LLM API error: {e2}"
-                else:
-                    event_bus.emit("error", {"message": f"LLM API error: {e}"})
-                    self._emergency_notify(str(e))
+
+                elif "API key expired" in error_str or "PERMISSION_DENIED" in error_str:
+                    # API key issue — don't retry, tell user immediately
+                    event_bus.emit("error", {"message": f"API key error: {error_str[:200]}"})
+                    self._emergency_notify(error_str)
                     return f"❌ LLM API error: {e}"
+
+                else:
+                    # For any other error (KeyError, streaming parse, etc.)
+                    # Try non-streaming fallback before giving up
+                    print(f"  🔧 Brain: Trying non-streaming fallback...")
+                    try:
+                        response = self.client.create(
+                            model=model,
+                            max_tokens=8192,
+                            system=self._get_system_prompt(),
+                            tools=TARS_TOOLS,
+                            messages=self.conversation_history,
+                        )
+                        call_duration = time.time() - call_start
+                        event_bus.emit("api_call", {
+                            "model": model,
+                            "tokens_in": response.usage.input_tokens,
+                            "tokens_out": response.usage.output_tokens,
+                            "duration": call_duration,
+                        })
+                        print(f"  🔧 Brain: Non-streaming fallback succeeded")
+                    except Exception as e2:
+                        event_bus.emit("error", {"message": f"LLM API error: {e2}"})
+                        self._emergency_notify(str(e2))
+                        return f"❌ LLM API error: {e2}"
 
             # Process response
             assistant_content = response.content

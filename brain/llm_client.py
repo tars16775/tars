@@ -347,6 +347,7 @@ class OpenAIStreamWrapper:
     def __enter__(self):
         self._stream = self._client.chat.completions.create(
             stream=True,
+            stream_options={"include_usage": True},
             **self._kwargs,
         )
         self._collected_text = ""

@@ -276,15 +276,31 @@ export function TarsProvider({ children }: { children: React.ReactNode }) {
         sendBrowserNotification('TARS // iMessage', data.message)
         break
 
-      case 'api_call':
+      case 'api_call': {
         setCurrentModel(data.model || '')
+        const tokensIn = data.tokens_in || 0
+        const tokensOut = data.tokens_out || 0
+        // Estimate cost (match server-side logic)
+        const modelLower = (data.model || '').toLowerCase()
+        let callCost = 0
+        if (modelLower.includes('gemini') || modelLower.includes('llama')) {
+          callCost = 0 // Free tiers
+        } else if (modelLower.includes('haiku')) {
+          callCost = (tokensIn * 0.80 + tokensOut * 4.00) / 1_000_000
+        } else if (modelLower.includes('claude') || modelLower.includes('sonnet') || modelLower.includes('opus')) {
+          callCost = (tokensIn * 3.00 + tokensOut * 15.00) / 1_000_000
+        } else if (modelLower.includes('gpt-4')) {
+          callCost = (tokensIn * 10.00 + tokensOut * 30.00) / 1_000_000
+        }
         setStats(prev => ({
           ...prev,
-          total_tokens_in: prev.total_tokens_in + (data.tokens_in || 0),
-          total_tokens_out: prev.total_tokens_out + (data.tokens_out || 0),
+          total_tokens_in: prev.total_tokens_in + tokensIn,
+          total_tokens_out: prev.total_tokens_out + tokensOut,
+          total_cost: prev.total_cost + callCost,
         }))
-        appendLog('event', `🤖 API call: ${data.model || 'LLM'} (${data.tokens_in || 0}→${data.tokens_out || 0} tokens)`, 'api')
+        appendLog('event', `🤖 API call: ${data.model || 'LLM'} (${tokensIn}→${tokensOut} tokens)`, 'api')
         break
+      }
 
       case 'status_change':
         setSubsystems(s => ({ ...s, agent: data.status || 'online' }))

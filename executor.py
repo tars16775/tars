@@ -491,7 +491,9 @@ class ToolExecutor:
 
     def _mac_mail(self, inp):
         """Handle mac_mail brain tool — direct Mail.app control."""
-        action = inp["action"]
+        action = inp.get("action")
+        if not action:
+            return {"success": False, "error": True, "content": "Missing required 'action' parameter. Use: send, unread, inbox, read, search, verify_sent"}
         try:
             if action == "unread":
                 return mac.mail_unread_count()
@@ -518,7 +520,9 @@ class ToolExecutor:
 
     def _mac_notes(self, inp):
         """Handle mac_notes brain tool — direct Apple Notes control."""
-        action = inp["action"]
+        action = inp.get("action")
+        if not action:
+            return {"success": False, "error": True, "content": "Missing required 'action' parameter. Use: list, read, create, search"}
         try:
             if action == "list":
                 return mac.notes_list()
@@ -534,7 +538,9 @@ class ToolExecutor:
 
     def _mac_calendar(self, inp):
         """Handle mac_calendar brain tool — direct Calendar control."""
-        action = inp["action"]
+        action = inp.get("action")
+        if not action:
+            return {"success": False, "error": True, "content": "Missing required 'action' parameter. Use: events, create"}
         try:
             if action == "events":
                 return mac.calendar_events(inp.get("calendar_name"), inp.get("days", 7))
@@ -549,7 +555,9 @@ class ToolExecutor:
 
     def _mac_reminders(self, inp):
         """Handle mac_reminders brain tool — direct Reminders control."""
-        action = inp["action"]
+        action = inp.get("action")
+        if not action:
+            return {"success": False, "error": True, "content": "Missing required 'action' parameter. Use: list, create, complete"}
         try:
             if action == "list":
                 return mac.reminders_list(inp.get("list_name"))
@@ -568,7 +576,9 @@ class ToolExecutor:
 
     def _mac_system(self, inp):
         """Handle mac_system brain tool — direct system controls."""
-        action = inp["action"]
+        action = inp.get("action")
+        if not action:
+            return {"success": False, "error": True, "content": "Missing required 'action' parameter. Use: volume, dark_mode, notify, clipboard, screenshot, environment, battery, spotlight"}
         try:
             if action == "volume":
                 return mac.set_volume(inp.get("value", 50))
