@@ -762,38 +762,55 @@ def mail_send(to_address, subject, body, attachment_path=None, from_address="tar
 def mail_verify_sent(subject, to_address=None):
     """Check the Sent mailbox to verify an email was actually sent.
     
+    Automatically discovers the correct account and sent mailbox name.
+    
     Args:
         subject: Subject line to search for
         to_address: Optional recipient to match
     """
     safe_subject = subject.replace('"', '\\"')
-    script = f'''
-    tell application "Mail"
-        set sentMsgs to messages of mailbox "Sent Messages" of account "Outlook"
-        set output to ""
-        set found to false
-        set counter to 0
-        repeat with m in sentMsgs
-            if counter >= 20 then exit repeat
-            if subject of m contains "{safe_subject}" then
-                set output to output & "FOUND — Subject: " & (subject of m) & " | To: " & (address of to recipient 1 of m) & " | Date: " & (date sent of m as string) & linefeed
-                set found to true
-            end if
-            set counter to counter + 1
-        end repeat
-        if not found then return "NOT_FOUND: No sent email matching subject '{safe_subject}'"
-        return output
-    end tell
-    '''
-    result = _run_applescript_stdin(script, timeout=60)
-    if result["success"] and "NOT_FOUND" in result.get("content", ""):
-        # Try alternative sent mailbox names
-        for alt_name in ["Sent", "Sent Items", "Sent Mail"]:
-            alt_script = script.replace('mailbox "Sent Messages" of account "Outlook"', f'mailbox "{alt_name}" of account "Outlook"')
-            alt_result = _run_applescript_stdin(alt_script, timeout=30)
-            if alt_result["success"] and "NOT_FOUND" not in alt_result.get("content", ""):
-                return alt_result
-    return result
+    
+    # Try all common sent folder names across all accounts
+    sent_names = ["Sent Items", "Sent Messages", "Sent", "Sent Mail"]
+    
+    # First discover account names
+    acct_result = _run_applescript('tell application "Mail" to get name of every account')
+    accounts = []
+    if acct_result["success"]:
+        accounts = [a.strip() for a in acct_result["content"].split(",")]
+    if not accounts:
+        accounts = ["Exchange", "Outlook", "iCloud"]  # Fallback guesses
+    
+    for acct in accounts:
+        for sent_name in sent_names:
+            script = f'''
+            tell application "Mail"
+                try
+                    set sentMsgs to messages of mailbox "{sent_name}" of account "{acct}"
+                    set output to ""
+                    set found to false
+                    set counter to 0
+                    repeat with m in sentMsgs
+                        if counter >= 20 then exit repeat
+                        if subject of m contains "{safe_subject}" then
+                            set output to output & "FOUND — Subject: " & (subject of m) & " | To: " & (address of to recipient 1 of m) & " | Date: " & (date sent of m as string) & linefeed
+                            set found to true
+                        end if
+                        set counter to counter + 1
+                    end repeat
+                    if not found then return "NOT_FOUND"
+                    return output
+                on error
+                    return "NOT_FOUND"
+                end try
+            end tell
+            '''
+            result = _run_applescript_stdin(script, timeout=30)
+            if result["success"] and "NOT_FOUND" not in result.get("content", ""):
+                return result
+    
+    return {"success": False, "error": True, 
+            "content": f"No sent email matching '{safe_subject}' found in any account"}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
