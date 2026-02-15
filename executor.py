@@ -51,12 +51,12 @@ AGENT_CLASSES = {
 }
 
 # Hard limit: max agent deployments per brain task cycle
-# v3: Increased for autonomous multi-step tasks (think+scan+deploy+verify = 4 tools per subtask)
-MAX_DEPLOYMENTS_PER_TASK = 12
+# Configurable via config.yaml safety.max_deployments (default 15)
+DEFAULT_MAX_DEPLOYMENTS = 15
 
 
 class ToolExecutor:
-    def __init__(self, config, imessage_sender, imessage_reader, memory_manager, logger):
+    def __init__(self, config, imessage_sender, imessage_reader, memory_manager, logger, kill_event=None):
         self.config = config
         self.sender = imessage_sender
         self.reader = imessage_reader
@@ -64,10 +64,12 @@ class ToolExecutor:
         self.logger = logger
         self.comms = agent_comms
         self.monitor = agent_monitor
+        self._kill_event = kill_event  # Shared threading.Event — set when kill word received
 
         # ── Deployment tracker — resets per task ──
         # Every deployment and its result, so brain sees full history
         self._deployment_log = []  # [{agent, task, success, steps, reason}]
+        self.max_deployments = config.get("safety", {}).get("max_deployments", DEFAULT_MAX_DEPLOYMENTS)
 
         # ── Dual-provider: agents use agent_llm (fast/free) ──
         agent_cfg = config.get("agent_llm")
@@ -303,15 +305,15 @@ class ToolExecutor:
 
         # ── Deployment status this task ──
         deployed = len(self._deployment_log)
-        remaining = MAX_DEPLOYMENTS_PER_TASK - deployed
+        remaining = self.max_deployments - deployed
         if self._deployment_log:
             dep_summary = "\n".join(
                 f"  {'✅' if d['success'] else '❌'} {d['agent']}: {d['task'][:80]}"
                 for d in self._deployment_log
             )
-            results.append(f"## Deployment Status ({deployed}/{MAX_DEPLOYMENTS_PER_TASK} used, {remaining} remaining)\n{dep_summary}")
+            results.append(f"## Deployment Status ({deployed}/{self.max_deployments} used, {remaining} remaining)\n{dep_summary}")
         else:
-            results.append(f"## Deployment Status\nNo agents deployed yet. Budget: {MAX_DEPLOYMENTS_PER_TASK}")
+            results.append(f"## Deployment Status\nNo agents deployed yet. Budget: {self.max_deployments}")
 
         full_scan = "\n\n".join(results)
         self.logger.info(f"🔍 Environment scan: {len(results)} checks completed")
@@ -457,7 +459,7 @@ class ToolExecutor:
 
         return {
             "success": True,
-            "content": f"💾 Checkpoint saved.\nCompleted: {completed}\nRemaining: {remaining}\nDeployments used: {len(self._deployment_log)}/{MAX_DEPLOYMENTS_PER_TASK}"
+            "content": f"💾 Checkpoint saved.\nCompleted: {completed}\nRemaining: {remaining}\nDeployments used: {len(self._deployment_log)}/{self.max_deployments}"
         }
 
     def _deploy_agent(self, agent_type, task):
@@ -476,13 +478,13 @@ class ToolExecutor:
 
         # ── Hard limit: prevent infinite deployment loops ──
         deployment_count = len(self._deployment_log)
-        if deployment_count >= MAX_DEPLOYMENTS_PER_TASK:
+        if deployment_count >= self.max_deployments:
             failures = self._get_failure_summary()
             return {
                 "success": False,
                 "error": True,
                 "content": (
-                    f"DEPLOYMENT LIMIT REACHED ({MAX_DEPLOYMENTS_PER_TASK} agents deployed this task). "
+                    f"DEPLOYMENT LIMIT REACHED ({self.max_deployments} agents deployed this task). "
                     f"You MUST ask Abdullah for help via send_imessage now.\n\n"
                     f"{failures}"
                 ),
@@ -516,7 +518,7 @@ class ToolExecutor:
             "attempt": attempt,
         })
         self.monitor.on_started(agent_type, task[:200], attempt)
-        self.logger.info(f"🚀 Deploying {agent_type} agent (deployment {attempt}/{MAX_DEPLOYMENTS_PER_TASK}): {task[:100]}")
+        self.logger.info(f"🚀 Deploying {agent_type} agent (deployment {attempt}/{self.max_deployments}): {task[:100]}")
 
         # ── Create and run the agent (with timeout) ──
         agent = agent_class(
@@ -524,6 +526,7 @@ class ToolExecutor:
             model=self.heavy_model,
             max_steps=40,
             phone=self.phone,
+            kill_event=self._kill_event,
         )
 
         agent_timeout = 300  # 5 minutes max per agent deployment
@@ -601,7 +604,7 @@ class ToolExecutor:
 
             # Build rich failure response with recovery ladder
             all_failures = self._get_failure_summary()
-            remaining = MAX_DEPLOYMENTS_PER_TASK - len(self._deployment_log)
+            remaining = self.max_deployments - len(self._deployment_log)
             attempt_num = len([d for d in self._deployment_log if d["agent"] == agent_type])
 
             # Structured recovery ladder — escalates with each failure

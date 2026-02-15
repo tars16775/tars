@@ -62,10 +62,24 @@ BANNER = """
 
 
 def load_config():
-    """Load configuration from config.yaml."""
+    """Load configuration from config.yaml with env var overrides.
+    
+    API keys can be set via environment variables:
+      TARS_BRAIN_API_KEY  →  brain_llm.api_key
+      TARS_AGENT_API_KEY  →  agent_llm.api_key + llm.api_key
+    """
     config_path = os.path.join(BASE_DIR, "config.yaml")
     with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    
+    # Env var overrides for API keys (so they never need to be in yaml)
+    if os.environ.get("TARS_BRAIN_API_KEY"):
+        config.setdefault("brain_llm", {})["api_key"] = os.environ["TARS_BRAIN_API_KEY"]
+    if os.environ.get("TARS_AGENT_API_KEY"):
+        config.setdefault("agent_llm", {})["api_key"] = os.environ["TARS_AGENT_API_KEY"]
+        config.setdefault("llm", {})["api_key"] = os.environ["TARS_AGENT_API_KEY"]
+    
+    return config
 
 
 class TARS:
@@ -110,7 +124,8 @@ class TARS:
         print("  📱 iMessage bridge ready")
 
         self.executor = ToolExecutor(
-            self.config, self.imessage_sender, self.imessage_reader, self.memory, self.logger
+            self.config, self.imessage_sender, self.imessage_reader, self.memory, self.logger,
+            kill_event=self._kill_event,
         )
         print("  🔧 Orchestrator executor ready")
         print(f"     ├─ 🌐 Browser Agent")
@@ -133,6 +148,7 @@ class TARS:
         self.running = True
         self.kill_words = self.config["safety"]["kill_words"]
         self._task_lock = threading.Lock()  # Prevent concurrent task processing
+        self._kill_event = threading.Event()  # Shared kill signal — stops running agents
 
         # Handle Ctrl+C gracefully
         signal.signal(signal.SIGINT, self._shutdown)
@@ -153,14 +169,6 @@ class TARS:
             f"# TARS — Last Session\n\nShutdown at {datetime.now().isoformat()}\n"
         )
         sys.exit(0)
-
-    def _check_kill_switch(self):
-        """Check if user sent a kill command via iMessage."""
-        killed, msg = self.imessage_reader.check_for_kill(self.kill_words)
-        if killed:
-            print(f"\n  🛑 Kill switch activated: '{msg}'")
-            return True
-        return False
 
     def run(self, initial_task=None):
         """Main agent loop."""
@@ -201,10 +209,18 @@ class TARS:
                     task = reply["content"]
                     event_bus.emit("imessage_received", {"message": task})
 
-                    # Check kill switch
+                    # Check kill switch — stops all running agents
                     if any(kw.lower() in task.lower() for kw in self.kill_words):
                         print(f"  🛑 Kill command received: {task}")
+                        self._kill_event.set()  # Signal all running agents to stop
                         event_bus.emit("kill_switch", {"source": "imessage"})
+                        try:
+                            self.imessage_sender.send("🛑 Kill switch activated — all agents stopped.")
+                        except Exception:
+                            pass
+                        # Reset kill event after a beat so new tasks can run
+                        time.sleep(1)
+                        self._kill_event.clear()
                         continue
 
                     # Process the message (brain classifies: chat vs task)

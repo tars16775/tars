@@ -16,8 +16,8 @@
 
 import json
 import time
-import subprocess
 
+from agents.base_agent import _send_progress
 from hands.browser import (
     act_goto, act_google, act_read_page, act_read_url,
     act_inspect_page, act_fill, act_click, act_select_option,
@@ -218,36 +218,17 @@ If the page says "Press and hold the button" or "prove you're human":
 
 
 # ─────────────────────────────────────────────
-#  iMessage Progress (bypass rate limit)
-# ─────────────────────────────────────────────
-
-def _send_progress(phone, message):
-    """Send a short iMessage progress update."""
-    escaped = message.replace("\\", "\\\\").replace('"', '\\"')
-    script = f'''
-    tell application "Messages"
-        set targetService to 1st account whose service type = iMessage
-        set targetBuddy to participant "{phone}" of targetService
-        send "{escaped}" to targetBuddy
-    end tell
-    '''
-    try:
-        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
-    except:
-        pass
-
-
-# ─────────────────────────────────────────────
 #  Browser Agent Class
 # ─────────────────────────────────────────────
 
 class BrowserAgent:
-    def __init__(self, llm_client, model, max_steps=40, phone=None):
+    def __init__(self, llm_client, model, max_steps=40, phone=None, kill_event=None):
         self.client = llm_client
         self.model = model
         self.max_steps = max_steps
         self.phone = phone
         self.update_every = 3  # iMessage update every N steps
+        self._kill_event = kill_event  # Shared threading.Event — set when kill word received
 
     def _dispatch(self, name, inp):
         """Route tool calls to browser functions."""
@@ -302,6 +283,13 @@ class BrowserAgent:
 
         for step in range(1, self.max_steps + 1):
             print(f"  🧠 [Browser Agent] Step {step}/{self.max_steps}...")
+
+            # ── Kill switch check — abort immediately ──
+            if self._kill_event and self._kill_event.is_set():
+                msg = f"Browser Agent killed by user at step {step}."
+                print(f"  🛑 {msg}")
+                self._notify(f"🛑 {msg}")
+                return {"success": False, "content": msg}
 
             try:
                 response = self.client.create(

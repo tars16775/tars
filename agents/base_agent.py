@@ -17,6 +17,7 @@ import time
 import subprocess
 from abc import ABC, abstractmethod
 from utils.event_bus import event_bus
+from utils.agent_monitor import agent_monitor
 
 
 # ─────────────────────────────────────────────
@@ -53,12 +54,13 @@ class BaseAgent(ABC):
       - _dispatch(name, inp) → str  — Route tool calls to handlers
     """
 
-    def __init__(self, llm_client, model, max_steps=40, phone=None, update_every=3):
+    def __init__(self, llm_client, model, max_steps=40, phone=None, update_every=3, kill_event=None):
         self.client = llm_client
         self.model = model
         self.max_steps = max_steps
         self.phone = phone
         self.update_every = update_every
+        self._kill_event = kill_event  # Shared threading.Event — set when kill word received
 
     # ── Abstract properties/methods subclasses must implement ──
 
@@ -147,7 +149,21 @@ class BaseAgent(ABC):
 
         for step in range(1, self.max_steps + 1):
             print(f"  🧠 [{self.agent_name}] Step {step}/{self.max_steps}...")
-            event_bus.emit("agent_step", {"agent": self.agent_name.lower().split()[0], "step": step})
+            agent_key = self.agent_name.lower().split()[0]
+            event_bus.emit("agent_step", {"agent": agent_key, "step": step})
+            agent_monitor.on_step(agent_key, step)
+
+            # ── Kill switch check — abort immediately ──
+            if self._kill_event and self._kill_event.is_set():
+                msg = f"{self.agent_name} killed by user at step {step}."
+                print(f"  \U0001f6d1 {msg}")
+                return {
+                    "success": False,
+                    "content": msg,
+                    "steps": step,
+                    "stuck": False,
+                    "stuck_reason": "Killed by user",
+                }
 
             # LLM call with retry for transient Groq errors
             response = None

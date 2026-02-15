@@ -195,6 +195,11 @@ class TARSBrain:
         self._tool_loop_count = 0
 
         while True:
+            # Safety: kill switch — stop thinking immediately
+            kill_event = getattr(self.tool_executor, '_kill_event', None)
+            if kill_event and kill_event.is_set():
+                return "🛑 Kill switch activated — stopping all work."
+
             # Safety: prevent infinite tool loops
             self._tool_loop_count += 1
             if self._tool_loop_count > self.max_tool_loops:

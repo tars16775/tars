@@ -36,13 +36,17 @@ _cdp = None
 
 
 def _ensure():
-    """Ensure we have a live CDP connection. Called before every action."""
+    """Ensure we have a live CDP connection. Called before every action.
+    
+    If the connection dropped (Chrome crash, WS timeout), creates a fresh
+    CDP instance instead of reusing the dead one.
+    """
     global _cdp
     if _cdp and _cdp.connected:
         _auto_handle_dialogs()
         return
-    if _cdp is None:
-        _cdp = CDP()
+    # Connection dead or never created — always start fresh
+    _cdp = CDP()
     _cdp.ensure_connected()
 
 
