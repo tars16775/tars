@@ -7,12 +7,13 @@ Structured logging with console + file output.
 """
 
 import logging
+import logging.handlers
 import os
 from datetime import datetime
 
 
 def setup_logger(config, base_dir):
-    """Set up TARS logger with console and file handlers."""
+    """Set up TARS logger with console and rotating file handlers."""
     log_level = getattr(logging, config["agent"]["log_level"].upper(), logging.INFO)
     log_file = os.path.join(base_dir, config["agent"]["log_file"])
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -28,8 +29,10 @@ def setup_logger(config, base_dir):
     console_fmt = logging.Formatter("  %(message)s")
     console.setFormatter(console_fmt)
 
-    # File handler
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    # Rotating file handler — 5MB max, keep 3 backups
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
     file_handler.setLevel(logging.DEBUG)
     file_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     file_handler.setFormatter(file_fmt)

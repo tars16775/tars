@@ -26,43 +26,41 @@ class IMessageReader:
     def _get_latest_rowid(self):
         """Get the ROWID of the most recent message."""
         try:
-            conn = self._get_db_connection()
-            cursor = conn.execute("SELECT MAX(ROWID) FROM message")
-            row = cursor.fetchone()
-            conn.close()
-            return row[0] if row[0] else 0
+            with self._get_db_connection() as conn:
+                cursor = conn.execute("SELECT MAX(ROWID) FROM message")
+                row = cursor.fetchone()
+                return row[0] if row[0] else 0
         except Exception:
             return 0
 
     def _get_new_messages(self):
         """Check for new messages from the owner's phone number since last check."""
         try:
-            conn = self._get_db_connection()
-            cursor = conn.execute("""
-                SELECT m.ROWID, m.text, m.is_from_me, m.date
-                FROM message m
-                LEFT JOIN handle h ON m.handle_id = h.ROWID
-                WHERE m.ROWID > ?
-                  AND h.id = ?
-                  AND m.is_from_me = 0
-                  AND m.text IS NOT NULL
-                  AND m.text != ''
-                  AND m.associated_message_type = 0
-                ORDER BY m.ROWID ASC
-            """, (self._last_message_rowid, self.phone))
+            with self._get_db_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT m.ROWID, m.text, m.is_from_me, m.date
+                    FROM message m
+                    LEFT JOIN handle h ON m.handle_id = h.ROWID
+                    WHERE m.ROWID > ?
+                      AND h.id = ?
+                      AND m.is_from_me = 0
+                      AND m.text IS NOT NULL
+                      AND m.text != ''
+                      AND m.associated_message_type = 0
+                    ORDER BY m.ROWID ASC
+                """, (self._last_message_rowid, self.phone))
 
-            messages = []
-            for row in cursor.fetchall():
-                rowid, text, is_from_me, date = row
-                messages.append({
-                    "rowid": rowid,
-                    "text": text.strip(),
-                    "date": date,
-                })
-                self._last_message_rowid = max(self._last_message_rowid, rowid)
+                messages = []
+                for row in cursor.fetchall():
+                    rowid, text, is_from_me, date = row
+                    messages.append({
+                        "rowid": rowid,
+                        "text": text.strip(),
+                        "date": date,
+                    })
+                    self._last_message_rowid = max(self._last_message_rowid, rowid)
 
-            conn.close()
-            return messages
+                return messages
         except Exception as e:
             print(f"  ⚠️ Error reading chat.db: {e}")
             return []

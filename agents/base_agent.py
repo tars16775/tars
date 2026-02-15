@@ -28,17 +28,21 @@ def _send_progress(phone, message):
     """Send a short iMessage progress update (bypasses rate limit)."""
     if not phone:
         return
-    escaped = message.replace("\\", "\\\\").replace('"', '\\"')
+    # Use argv to avoid AppleScript injection — message never enters eval context
     script = f'''
-    tell application "Messages"
-        set targetService to 1st account whose service type = iMessage
-        set targetBuddy to participant "{phone}" of targetService
-        send "{escaped}" to targetBuddy
-    end tell
+    on run argv
+        set msg to item 1 of argv
+        tell application "Messages"
+            set targetService to 1st account whose service type = iMessage
+            set targetBuddy to participant "{phone}" of targetService
+            send msg to targetBuddy
+        end tell
+    end run
     '''
     try:
-        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=10)
-    except:
+        subprocess.run(["osascript", "-e", script, message],
+                       capture_output=True, text=True, timeout=10)
+    except Exception:
         pass
 
 

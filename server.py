@@ -70,7 +70,7 @@ class TARSServer:
 
     def _run_http(self):
         """Run HTTP server for dashboard static files."""
-        server = HTTPServer(("0.0.0.0", HTTP_PORT), DashboardHTTPHandler)
+        server = HTTPServer(("127.0.0.1", HTTP_PORT), DashboardHTTPHandler)
         server.serve_forever()
 
     async def _run_ws(self):
@@ -93,7 +93,7 @@ class TARSServer:
             finally:
                 event_bus.unsubscribe(websocket.send)
 
-        async with websockets.serve(handler, "0.0.0.0", WS_PORT):
+        async with websockets.serve(handler, "127.0.0.1", WS_PORT):
             await asyncio.Future()  # Run forever
 
     async def _handle_ws_message(self, message, websocket):
@@ -142,8 +142,14 @@ class TARSServer:
                 await websocket.send(json.dumps({"type": "agent_status", "data": agent_data}))
 
             elif msg_type == "kill":
+                # Require passphrase for kill from dashboard
+                expected = self.tars.config.get("relay", {}).get("passphrase", "") if self.tars else ""
+                if expected and data.get("passphrase") != expected:
+                    await websocket.send(json.dumps({"type": "error", "data": {"message": "Unauthorized: invalid passphrase"}}))
+                    return
                 event_bus.emit("kill_switch", {"source": "dashboard"})
                 if self.tars:
+                    self.tars._kill_event.set()
                     self.tars.running = False
 
             elif msg_type == "update_config":

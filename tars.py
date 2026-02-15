@@ -23,6 +23,7 @@ import os
 import sys
 import yaml
 import time
+import queue
 import signal
 import threading
 from datetime import datetime
@@ -123,6 +124,12 @@ class TARS:
         self.imessage_reader = IMessageReader(self.config)
         print("  📱 iMessage bridge ready")
 
+        # Must init before executor/brain so they can reference these
+        self.running = True
+        self.kill_words = self.config["safety"]["kill_words"]
+        self._kill_event = threading.Event()  # Shared kill signal — stops running agents
+        self._task_queue = queue.Queue()  # Thread-safe task queue
+
         self.executor = ToolExecutor(
             self.config, self.imessage_sender, self.imessage_reader, self.memory, self.logger,
             kill_event=self._kill_event,
@@ -144,11 +151,6 @@ class TARS:
         self.server = TARSServer(memory_manager=self.memory, tars_instance=self)
         self.server.start()
         print("  🖥️  Dashboard live at \033[36mhttp://localhost:8420\033[0m")
-
-        self.running = True
-        self.kill_words = self.config["safety"]["kill_words"]
-        self._task_lock = threading.Lock()  # Prevent concurrent task processing
-        self._kill_event = threading.Event()  # Shared kill signal — stops running agents
 
         # Handle Ctrl+C gracefully
         signal.signal(signal.SIGINT, self._shutdown)
@@ -177,6 +179,10 @@ class TARS:
         print(f"  {'─' * 50}\n")
 
         event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
+
+        # Start task worker thread (processes queue serially)
+        worker = threading.Thread(target=self._task_worker, daemon=True)
+        worker.start()
 
         # Dashboard URL (don't auto-open — it interferes with Chrome browser tools)
         print(f"  🌐 Open dashboard: http://localhost:8420\n")
@@ -243,37 +249,48 @@ class TARS:
         v4: The brain handles classification (chat vs task) internally.
         We DON'T reset conversation history — TARS remembers the flow.
         We only reset the deployment budget so each message gets fresh agents.
-        Thread-safe: only one task can run at a time.
+        Thread-safe: queued via self._task_queue so messages are never lost.
         """
-        if not self._task_lock.acquire(blocking=False):
-            print(f"  ⚠️ Task already running, queueing: {task[:80]}")
-            self._task_lock.acquire()  # Block until current task finishes
-        
-        try:
-            print(f"\n  {'═' * 50}")
-            print(f"  📨 Message: {task}")
-            print(f"  {'═' * 50}\n")
+        # Put task on queue — the worker processes them in order
+        self._task_queue.put(task)
 
-            self.logger.info(f"New message: {task}")
-            event_bus.emit("task_received", {"task": task, "source": "agent"})
-            event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
+    def _task_worker(self):
+        """Background worker that processes tasks from the queue, one at a time."""
+        while self.running:
+            try:
+                task = self._task_queue.get(timeout=1)
+            except queue.Empty:
+                continue
 
-            # Reset deployment tracker (fresh agent budget) but NOT conversation
-            self.executor.reset_task_tracker()
+            try:
+                print(f"\n  {'═' * 50}")
+                print(f"  📨 Message: {task}")
+                print(f"  {'═' * 50}\n")
 
-            # Send to brain — it classifies and handles everything
-            response = self.brain.think(task)
+                self.logger.info(f"New message: {task}")
+                event_bus.emit("task_received", {"task": task, "source": "agent"})
+                event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
 
-            # Log the result
-            self.logger.info(f"Cycle complete. Response: {response[:200]}")
+                # Reset deployment tracker (fresh agent budget) but NOT conversation
+                self.executor.reset_task_tracker()
 
-            event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
+                # Send to brain — it classifies and handles everything
+                response = self.brain.think(task)
 
-            print(f"\n  {'─' * 50}")
-            print(f"  ✅ Cycle complete")
-            print(f"  {'─' * 50}\n")
-        finally:
-            self._task_lock.release()
+                # Log the result
+                self.logger.info(f"Cycle complete. Response: {response[:200]}")
+
+                event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
+
+                print(f"\n  {'─' * 50}")
+                print(f"  ✅ Cycle complete")
+                print(f"  {'─' * 50}\n")
+            except Exception as e:
+                self.logger.error(f"Task processing error: {e}")
+                print(f"  ⚠️ Task error: {e}")
+                event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
+            finally:
+                self._task_queue.task_done()
 
 
 # ─── Entry Point ─────────────────────────────────────

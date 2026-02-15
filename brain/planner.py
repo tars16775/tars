@@ -148,9 +148,11 @@ class TARSBrain:
                     summary_parts.append(f"TARS: {content[:200]}")
         
         self._compacted_summary = "\n".join(summary_parts[-30:])  # Keep last 30 entries
-        # Cap total size to prevent system prompt bloat
+        # Cap total size — keep first 500 chars (task context) + tail (recent results)
         if len(self._compacted_summary) > 4000:
-            self._compacted_summary = self._compacted_summary[-4000:]
+            head = self._compacted_summary[:500]
+            tail = self._compacted_summary[-(4000 - 500 - 20):]  # leave room for separator
+            self._compacted_summary = head + "\n... (compacted) ...\n" + tail
         self.conversation_history = recent
         
         print(f"  📦 Compacted history: {len(old_messages)} old messages → summary, keeping {len(recent)} recent")
@@ -442,7 +444,9 @@ class TARSBrain:
         
         self._compacted_summary = "\n".join(summary_parts[-40:])
         if len(self._compacted_summary) > 4000:
-            self._compacted_summary = self._compacted_summary[-4000:]
+            head = self._compacted_summary[:500]
+            tail = self._compacted_summary[-(4000 - 500 - 20):]
+            self._compacted_summary = head + "\n... (compacted) ...\n" + tail
         self.conversation_history = []
         print(f"  📦 Force-compacted conversation into summary ({len(summary_parts)} entries)")
 

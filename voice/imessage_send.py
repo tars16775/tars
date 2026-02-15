@@ -30,26 +30,22 @@ class IMessageSender:
         if len(message) > self.max_length:
             message = message[:self.max_length - 20] + "\n\n... (truncated)"
 
-        # Escape for AppleScript — handle all special chars
-        escaped = (message
-            .replace("\\", "\\\\")
-            .replace('"', '\\"')
-            .replace("\n", "\\n")
-            .replace("\r", "")
-            .replace("\t", " ")
-        )
-
+        # Use stdin pipe to avoid AppleScript injection — message content never
+        # enters the AppleScript string evaluation context.
         script = f'''
-        tell application "Messages"
-            set targetService to 1st account whose service type = iMessage
-            set targetBuddy to participant "{self.phone}" of targetService
-            send "{escaped}" to targetBuddy
-        end tell
+        on run argv
+            set msg to item 1 of argv
+            tell application "Messages"
+                set targetService to 1st account whose service type = iMessage
+                set targetBuddy to participant "{self.phone}" of targetService
+                send msg to targetBuddy
+            end tell
+        end run
         '''
 
         try:
             result = subprocess.run(
-                ["osascript", "-e", script],
+                ["osascript", "-e", script, message],
                 capture_output=True, text=True, timeout=15
             )
             self._last_sent_time = time.time()

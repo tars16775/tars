@@ -10,19 +10,49 @@ import re
 
 # Patterns that indicate destructive actions
 DESTRUCTIVE_PATTERNS = [
-    r"rm\s+(-rf?|--recursive)",
+    # File destruction
+    r"rm\s+(-[rRf]+|--recursive|--force)",
     r"rmdir",
+    r":\s*>\s*/",                      # truncate files
+    r"mv\s+.*/dev/null",
+    # Git force operations
     r"git\s+push\s+.*--force",
     r"git\s+push\s+-f",
     r"git\s+reset\s+--hard",
-    r"DROP\s+TABLE",
+    r"git\s+clean\s+-[dfx]+",
+    # Database destruction
+    r"DROP\s+(TABLE|DATABASE|INDEX)",
     r"DELETE\s+FROM",
-    r"format\s+",
+    r"TRUNCATE\s+TABLE",
+    # Disk / system
     r"mkfs\.",
     r"dd\s+if=",
-    r">\s*/dev/",
-    r"chmod\s+777",
+    r"format\s+",
+    r"diskutil\s+(erase|partition|unmount)",
+    r">/dev/",
+    r"chmod\s+(000|777)",
+    # Privilege escalation
     r"sudo\s+rm",
+    r"sudo\s+dd",
+    r"sudo\s+mkfs",
+    r"sudo\s+reboot",
+    r"sudo\s+shutdown",
+    r"sudo\s+halt",
+    # System control
+    r"\breboot\b",
+    r"\bshutdown\b",
+    r"\bhalt\b",
+    r"launchctl\s+(unload|remove)",
+    r"killall\s+",
+    r"pkill\s+-9\s+",
+    # Remote code execution
+    r"curl\s+.*\|\s*(bash|sh|zsh)",
+    r"wget\s+.*\|\s*(bash|sh|zsh)",
+    r"\beval\s*\(",
+    r"\bexec\s*\(",
+    r"python.*-c.*import\s+os.*system",
+    # Fork bombs / resource exhaustion  
+    r":\(\)\{\s*:\|",                    # bash fork bomb
 ]
 
 
