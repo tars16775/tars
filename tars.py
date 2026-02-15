@@ -219,6 +219,9 @@ class TARS:
         event_bus.emit("task_received", {"task": task, "source": "agent"})
         event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
 
+        # Reset deployment tracker so each task gets a fresh budget
+        self.executor.reset_task_tracker()
+
         # Update context
         self.memory.update_context(
             f"# Current Task\n\n{task}\n\nStarted: {datetime.now().isoformat()}\n"

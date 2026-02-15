@@ -45,6 +45,7 @@ class TARSBrain:
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             active_project=self.memory.get_active_project(),
             memory_context=memory_context,
+            max_deploys=6,
         )
 
     def _choose_model(self, message):

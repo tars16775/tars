@@ -3,16 +3,16 @@
 ║      TARS — Orchestrator Executor                            ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Routes the brain's tool calls to agent deployments and      ║
-║  direct handlers. Manages the escalation chain when agents   ║
-║  get stuck.                                                  ║
+║  direct handlers. Tracks ALL deployments so the brain sees   ║
+║  what already failed and can make smarter decisions.         ║
 ║                                                              ║
-║  The brain deploys agents → executor launches them →         ║
-║  agents run autonomously → results flow back to brain.       ║
+║  Key design: The executor NEVER silently retries the same    ║
+║  thing. Every failure goes back to the brain with full       ║
+║  context so the LLM can reason about the next move.          ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
 from brain.llm_client import LLMClient
-from brain.escalation import EscalationManager
 from brain.self_improve import SelfImproveEngine
 from agents.browser_agent import BrowserAgent
 from agents.coder_agent import CoderAgent
@@ -37,6 +37,9 @@ AGENT_CLASSES = {
     "file": FileAgent,
 }
 
+# Hard limit: max agent deployments per brain task cycle
+MAX_DEPLOYMENTS_PER_TASK = 6
+
 
 class ToolExecutor:
     def __init__(self, config, imessage_sender, imessage_reader, memory_manager, logger):
@@ -45,9 +48,12 @@ class ToolExecutor:
         self.reader = imessage_reader
         self.memory = memory_manager
         self.logger = logger
-        self.escalation = EscalationManager(max_retries=config["safety"]["max_retries"])
         self.comms = agent_comms
         self.monitor = agent_monitor
+
+        # ── Deployment tracker — resets per task ──
+        # Every deployment and its result, so brain sees full history
+        self._deployment_log = []  # [{agent, task, success, steps, reason}]
 
         # LLM client for agents
         llm_cfg = config["llm"]
@@ -69,6 +75,22 @@ class ToolExecutor:
             llm_client=self.llm_client,
             model=self.fast_model,
         )
+
+    def reset_task_tracker(self):
+        """Call this when a new user task starts (from tars.py)."""
+        self._deployment_log = []
+
+    def _get_failure_summary(self):
+        """Build a summary of all failed deployments this task for the brain to see."""
+        failures = [d for d in self._deployment_log if not d["success"]]
+        if not failures:
+            return ""
+        lines = ["## ⚠️ PREVIOUS FAILED ATTEMPTS THIS TASK:"]
+        for i, f in enumerate(failures, 1):
+            lines.append(f"  {i}. [{f['agent']}] task='{f['task'][:100]}' → FAILED ({f['steps']} steps): {f['reason'][:200]}")
+        lines.append("")
+        lines.append("DO NOT repeat the same approach. Analyze WHY each failed and try something DIFFERENT.")
+        return "\n".join(lines)
 
     def execute(self, tool_name, tool_input):
         """Execute a tool call and return the result."""
@@ -131,13 +153,12 @@ class ToolExecutor:
             return read_file(inp["path"])
 
         elif tool_name == "think":
-            # Think tool — just log and return (brain processes internally)
             thought = inp["thought"]
             self.logger.info(f"💭 Brain thinking: {thought[:200]}")
             event_bus.emit("thinking", {"text": thought, "model": "brain"})
-            return {"success": True, "content": f"Thought recorded. Continue with your plan."}
+            return {"success": True, "content": "Thought recorded. Continue with your plan."}
 
-        # ─── Legacy tool names (backward compatibility) ──
+        # ─── Legacy tool names ──
         elif tool_name == "web_task":
             return self._deploy_agent("browser", inp["task"])
 
@@ -148,43 +169,65 @@ class ToolExecutor:
         else:
             return {"success": False, "error": True, "content": f"Unknown tool: {tool_name}"}
 
-    def _deploy_agent(self, agent_type, task, context=None, attempt=1):
+    def _deploy_agent(self, agent_type, task):
         """
-        Deploy a specialist agent. Handles escalation if agent gets stuck.
-
-        Args:
-            agent_type: "browser", "coder", "system", "research", "file"
-            task: The task description
-            context: Optional guidance from escalation manager
-            attempt: Current attempt number (for escalation chain)
+        Deploy a specialist agent. No hidden retry loops.
+        
+        If the agent succeeds → return success to brain.
+        If the agent gets stuck → return the failure WITH full context 
+        of all previous failures so the brain can make a smarter decision.
+        
+        The BRAIN decides what to do next, not the executor.
         """
         agent_class = AGENT_CLASSES.get(agent_type)
         if not agent_class:
             return {"success": False, "error": True, "content": f"Unknown agent type: {agent_type}"}
 
-        # ── Pre-task: get memory advice ──
-        memory_context = self.self_improve.get_pre_task_advice(agent_type, task)
-        if memory_context and context:
-            context = f"{context}\n\n## Learned from past tasks\n{memory_context}"
-        elif memory_context:
-            context = f"## Learned from past tasks\n{memory_context}"
+        # ── Hard limit: prevent infinite deployment loops ──
+        deployment_count = len(self._deployment_log)
+        if deployment_count >= MAX_DEPLOYMENTS_PER_TASK:
+            failures = self._get_failure_summary()
+            return {
+                "success": False,
+                "error": True,
+                "content": (
+                    f"DEPLOYMENT LIMIT REACHED ({MAX_DEPLOYMENTS_PER_TASK} agents deployed this task). "
+                    f"You MUST ask Abdullah for help via send_imessage now.\n\n"
+                    f"{failures}"
+                ),
+            }
 
-        # ── Check for handoff context from another agent ──
+        # ── Build context from previous failures + memory ──
+        context_parts = []
+
+        # Previous failure history (most important — prevents repeating mistakes)
+        failure_summary = self._get_failure_summary()
+        if failure_summary:
+            context_parts.append(failure_summary)
+
+        # Memory advice from past tasks
+        memory_context = self.self_improve.get_pre_task_advice(agent_type, task)
+        if memory_context:
+            context_parts.append(f"## Learned from past tasks\n{memory_context}")
+
+        # Handoff from another agent
         handoff = self.comms.get_handoff_context(agent_type)
         if handoff:
-            context = f"{context}\n\n{handoff}" if context else handoff
+            context_parts.append(handoff)
 
-        # Emit agent start event + update monitor
+        context = "\n\n".join(context_parts) if context_parts else None
+
+        # ── Emit events ──
+        attempt = deployment_count + 1
         event_bus.emit("agent_started", {
             "agent": agent_type,
             "task": task[:200],
             "attempt": attempt,
         })
         self.monitor.on_started(agent_type, task[:200], attempt)
+        self.logger.info(f"🚀 Deploying {agent_type} agent (deployment {attempt}/{MAX_DEPLOYMENTS_PER_TASK}): {task[:100]}")
 
-        self.logger.info(f"🚀 Deploying {agent_type} agent (attempt {attempt}): {task[:100]}")
-
-        # Create and run the agent
+        # ── Create and run the agent ──
         agent = agent_class(
             llm_client=self.llm_client,
             model=self.heavy_model,
@@ -194,16 +237,25 @@ class ToolExecutor:
 
         result = agent.run(task, context=context)
 
-        # ── Post-task: record in self-improvement engine ──
-        escalation_history = self.escalation.failure_log[-3:] if attempt > 1 else []
+        # ── Record this deployment ──
+        entry = {
+            "agent": agent_type,
+            "task": task[:300],
+            "success": result.get("success", False),
+            "steps": result.get("steps", 0),
+            "reason": result.get("stuck_reason") or result.get("content", "")[:300],
+        }
+        self._deployment_log.append(entry)
+
+        # ── Record in self-improvement engine ──
         self.self_improve.record_task_outcome(
             agent_name=agent_type,
             task=task,
             result=result,
-            escalation_history=escalation_history,
+            escalation_history=[],
         )
 
-        # ── If success, create handoff context for potential follow-up agents ──
+        # ── Handoff context on success ──
         if result.get("success"):
             self.comms.send(
                 from_agent=agent_type,
@@ -212,7 +264,7 @@ class ToolExecutor:
                 msg_type="result",
             )
 
-        # Emit agent completion event + update monitor
+        # ── Emit completion ──
         event_bus.emit("agent_completed", {
             "agent": agent_type,
             "success": result.get("success", False),
@@ -221,82 +273,24 @@ class ToolExecutor:
         })
         self.monitor.on_completed(agent_type, result.get("success", False), result.get("steps", 0))
 
-        # ── Handle stuck agents — escalation chain ──
-        if result.get("stuck") and attempt <= 3:
+        # ── If failed, enrich the result so brain sees everything ──
+        if not result.get("success"):
             stuck_reason = result.get("stuck_reason", result.get("content", "Unknown"))
             self.logger.warning(f"⚠️ {agent_type} agent stuck: {stuck_reason[:200]}")
 
-            # Ask escalation manager what to do
-            escalation = self.escalation.handle_stuck(
-                agent_name=agent_type,
-                task=task,
-                stuck_reason=stuck_reason,
-                attempt=attempt,
+            # Build rich failure response for the brain
+            all_failures = self._get_failure_summary()
+            remaining = MAX_DEPLOYMENTS_PER_TASK - len(self._deployment_log)
+
+            result["content"] = (
+                f"❌ {agent_type} agent FAILED after {result.get('steps', 0)} steps.\n"
+                f"Reason: {stuck_reason[:400]}\n\n"
+                f"{all_failures}\n\n"
+                f"You have {remaining} agent deployments remaining this task. "
+                f"THINK about WHY this failed before deploying again. "
+                f"Consider: (1) deploy same agent with DIFFERENT, MORE SPECIFIC instructions, "
+                f"(2) break the task into smaller steps and deploy for just the FIRST step, "
+                f"(3) ask Abdullah for help via send_imessage."
             )
-
-            event_bus.emit("agent_escalated", {
-                "agent": agent_type,
-                "strategy": escalation["strategy"],
-                "message": escalation["message"][:200],
-            })
-            self.monitor.on_escalated(agent_type)
-
-            self.logger.info(f"🔄 Escalation strategy: {escalation['strategy']} — {escalation['message'][:100]}")
-
-            strategy = escalation["strategy"]
-
-            if strategy == "retry":
-                # Retry same agent with guidance
-                return self._deploy_agent(
-                    agent_type=escalation["agent"],
-                    task=task,
-                    context=escalation["context"],
-                    attempt=attempt + 1,
-                )
-
-            elif strategy == "reroute":
-                # Try a different agent
-                return self._deploy_agent(
-                    agent_type=escalation["agent"],
-                    task=task,
-                    context=escalation["context"],
-                    attempt=attempt + 1,
-                )
-
-            elif strategy == "decompose":
-                # Retry with decomposition guidance
-                return self._deploy_agent(
-                    agent_type=escalation["agent"],
-                    task=task,
-                    context=escalation["context"],
-                    attempt=attempt + 1,
-                )
-
-            elif strategy == "ask_user":
-                # Send iMessage and wait for user response
-                self.sender.send(escalation["message"])
-                event_bus.emit("imessage_sent", {"message": escalation["message"]})
-
-                reply = self.reader.wait_for_reply(timeout=300)
-                if reply.get("success"):
-                    user_response = reply["content"]
-                    event_bus.emit("imessage_received", {"message": user_response})
-
-                    if user_response.lower().strip() in ("skip", "cancel", "stop", "nevermind"):
-                        return {"success": False, "content": "Task skipped by user."}
-
-                    # Retry with user's guidance
-                    return self._deploy_agent(
-                        agent_type=agent_type,
-                        task=task,
-                        context=f"User's guidance: {user_response}",
-                        attempt=1,  # Reset attempts with user guidance
-                    )
-                else:
-                    return {"success": False, "content": f"Agent stuck and user didn't respond. {stuck_reason}"}
-
-        # Clear failure log on success
-        if result.get("success"):
-            self.escalation.clear_log()
 
         return result
