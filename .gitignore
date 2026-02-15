@@ -37,3 +37,10 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# ── TARS Control App Build ─────────────────
+app/build/
+app/dist/
+app/icon.iconset/
+app/icon.png
+app/icon.icns
