@@ -38,6 +38,7 @@ from hands.terminal import run_terminal
 from hands.file_manager import read_file
 from hands.browser import act_google as browser_google
 from hands import mac_control as mac
+from hands.report_gen import generate_report as _gen_report
 from utils.event_bus import event_bus
 from utils.agent_monitor import agent_monitor
 
@@ -221,6 +222,10 @@ class ToolExecutor:
             return self._mac_reminders(inp)
         elif tool_name == "mac_system":
             return self._mac_system(inp)
+
+        # ─── Report Generation ──
+        elif tool_name == "generate_report":
+            return self._generate_report(inp)
 
         else:
             return {"success": False, "error": True, "content": f"Unknown tool: {tool_name}"}
@@ -497,7 +502,16 @@ class ToolExecutor:
             elif action == "search":
                 return mac.mail_search(inp.get("keyword", ""))
             elif action == "send":
-                return mac.mail_send(inp["to"], inp["subject"], inp["body"])
+                return mac.mail_send(
+                    inp["to"], inp["subject"], inp["body"],
+                    attachment_path=inp.get("attachment_path"),
+                    from_address=inp.get("from_address", "tarsitgroup@outlook.com")
+                )
+            elif action == "verify_sent":
+                return mac.mail_verify_sent(
+                    inp["subject"],
+                    to_address=inp.get("to")
+                )
             return {"success": False, "error": True, "content": f"Unknown mail action: {action}"}
         except Exception as e:
             return {"success": False, "error": True, "content": f"Mail error: {e}"}
@@ -575,6 +589,21 @@ class ToolExecutor:
             return {"success": False, "error": True, "content": f"Unknown system action: {action}"}
         except Exception as e:
             return {"success": False, "error": True, "content": f"System error: {e}"}
+
+    def _generate_report(self, inp):
+        """Handle generate_report brain tool — create Excel/PDF/CSV reports."""
+        try:
+            return _gen_report(
+                format_type=inp["format"],
+                title=inp["title"],
+                headers=inp.get("headers"),
+                rows=inp.get("rows"),
+                sections=inp.get("sections"),
+                filename=inp.get("filename"),
+                summary=inp.get("summary"),
+            )
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Report generation error: {e}"}
 
     def _deploy_agent(self, agent_type, task):
         """

@@ -709,20 +709,90 @@ def mail_search(keyword, mailbox="inbox"):
     return _run_applescript(script, timeout=60)
 
 
-def mail_send(to_address, subject, body):
-    """Send an email via Mail.app."""
+def mail_send(to_address, subject, body, attachment_path=None, from_address="tarsitgroup@outlook.com"):
+    """Send an email via Mail.app with optional attachment.
+    
+    Args:
+        to_address: Recipient email
+        subject: Email subject
+        body: Email body text
+        attachment_path: Optional absolute path to a file to attach
+        from_address: Sender account (default: tarsitgroup@outlook.com)
+    """
+    # Escape special characters for AppleScript
+    safe_subject = subject.replace('\\', '\\\\').replace('"', '\\"')
+    safe_body = body.replace('\\', '\\\\').replace('"', '\\"')
+    
+    if attachment_path:
+        # Expand ~ and resolve path
+        attachment_path = os.path.expanduser(attachment_path)
+        if not os.path.isfile(attachment_path):
+            return {"success": False, "error": True, "content": f"Attachment not found: {attachment_path}"}
+        # Convert to POSIX file for AppleScript
+        script = f'''
+        tell application "Mail"
+            set msg to make new outgoing message with properties {{subject:"{safe_subject}", content:"{safe_body}", visible:false}}
+            tell msg
+                make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
+                set senderAddr to "{from_address}"
+                -- Attach the file
+                set theAttachment to POSIX file "{attachment_path}"
+                make new attachment with properties {{file name:theAttachment}} at after last paragraph
+            end tell
+            send msg
+        end tell
+        '''
+    else:
+        script = f'''
+        tell application "Mail"
+            set msg to make new outgoing message with properties {{subject:"{safe_subject}", content:"{safe_body}", visible:false}}
+            tell msg
+                make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
+            end tell
+            send msg
+        end tell
+        '''
+    result = _run_applescript_stdin(script, timeout=60)
+    if result["success"]:
+        att_info = f" (with attachment: {os.path.basename(attachment_path)})" if attachment_path else ""
+        result["content"] = f"Email sent to {to_address}: {subject}{att_info}"
+    return result
+
+
+def mail_verify_sent(subject, to_address=None):
+    """Check the Sent mailbox to verify an email was actually sent.
+    
+    Args:
+        subject: Subject line to search for
+        to_address: Optional recipient to match
+    """
+    safe_subject = subject.replace('"', '\\"')
     script = f'''
     tell application "Mail"
-        set msg to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:false}}
-        tell msg
-            make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
-        end tell
-        send msg
+        set sentMsgs to messages of mailbox "Sent Messages" of account "Outlook"
+        set output to ""
+        set found to false
+        set counter to 0
+        repeat with m in sentMsgs
+            if counter >= 20 then exit repeat
+            if subject of m contains "{safe_subject}" then
+                set output to output & "FOUND — Subject: " & (subject of m) & " | To: " & (address of to recipient 1 of m) & " | Date: " & (date sent of m as string) & linefeed
+                set found to true
+            end if
+            set counter to counter + 1
+        end repeat
+        if not found then return "NOT_FOUND: No sent email matching subject '{safe_subject}'"
+        return output
     end tell
     '''
     result = _run_applescript_stdin(script, timeout=60)
-    if result["success"]:
-        result["content"] = f"Email sent to {to_address}: {subject}"
+    if result["success"] and "NOT_FOUND" in result.get("content", ""):
+        # Try alternative sent mailbox names
+        for alt_name in ["Sent", "Sent Items", "Sent Mail"]:
+            alt_script = script.replace('mailbox "Sent Messages" of account "Outlook"', f'mailbox "{alt_name}" of account "Outlook"')
+            alt_result = _run_applescript_stdin(alt_script, timeout=30)
+            if alt_result["success"] and "NOT_FOUND" not in alt_result.get("content", ""):
+                return alt_result
     return result
 
 

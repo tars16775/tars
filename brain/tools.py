@@ -235,17 +235,18 @@ TARS_TOOLS = [
     # ═══════════════════════════════════════
     {
         "name": "mac_mail",
-        "description": "Quick email operations without deploying an agent. Actions:\n- 'unread' → get unread count\n- 'inbox' → read latest 5 emails\n- 'read' → read specific email by index\n- 'search' → search by keyword\n- 'send' → send an email\n\nExamples:\n  mac_mail('unread')\n  mac_mail('inbox', count=10)\n  mac_mail('send', to='bob@gmail.com', subject='Hi', body='Hello from TARS')",
+        "description": "Email via Mac's Mail.app (logged in as tarsitgroup@outlook.com). Actions:\n- 'send' → send email (with optional file attachment)\n- 'unread' → get unread count\n- 'inbox' → read latest emails\n- 'read' → read specific email by index\n- 'search' → search by keyword\n- 'verify_sent' → check Sent folder to confirm an email was actually delivered\n\nExamples:\n  mac_mail('send', to='bob@gmail.com', subject='Report', body='See attached.', attachment_path='/Users/abdullah/Documents/TARS_Reports/report.xlsx')\n  mac_mail('verify_sent', subject='Report') — confirms it landed in Sent\n  mac_mail('inbox', count=10)",
         "input_schema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["unread", "inbox", "read", "search", "send"]},
+                "action": {"type": "string", "enum": ["unread", "inbox", "read", "search", "send", "verify_sent"]},
                 "count": {"type": "integer", "description": "Emails to read (inbox action)", "default": 5},
                 "index": {"type": "integer", "description": "Email index (read action)"},
                 "keyword": {"type": "string", "description": "Search keyword (search action)"},
                 "to": {"type": "string", "description": "Recipient (send action)"},
-                "subject": {"type": "string", "description": "Subject (send action)"},
-                "body": {"type": "string", "description": "Body (send action)"}
+                "subject": {"type": "string", "description": "Subject (send/verify_sent action)"},
+                "body": {"type": "string", "description": "Body (send action)"},
+                "attachment_path": {"type": "string", "description": "Absolute path to file to attach (send action, optional)"}
             },
             "required": ["action"]
         }
@@ -309,6 +310,27 @@ TARS_TOOLS = [
                 "query": {"type": "string", "description": "Search query (spotlight action)"}
             },
             "required": ["action"]
+        }
+    },
+
+    # ═══════════════════════════════════════
+    #  Report Generation
+    # ═══════════════════════════════════════
+    {
+        "name": "generate_report",
+        "description": "Generate professional reports (Excel, PDF, or CSV). Reports are saved to ~/Documents/TARS_Reports/ and can be attached to emails.\n\nFormats:\n- 'excel' → .xlsx with styled headers, alternating rows, auto-width, optional summary\n- 'pdf' → .pdf with title, sections, optional table\n- 'csv' → simple .csv data export\n\nWorkflow: generate_report → get the path → mac_mail send with attachment_path\n\nExamples:\n  generate_report('excel', 'Sales Report', headers=['Product','Revenue'], rows=[['Widget','$1000'],['Gadget','$2500']])\n  generate_report('pdf', 'Project Summary', sections=[{'heading':'Overview','body':'Project completed on time.'}])\n  generate_report('excel', 'Analysis', headers=['Metric','Value'], rows=[...], summary={'Total':'$5000','Average':'$2500'})",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "format": {"type": "string", "enum": ["excel", "pdf", "csv"], "description": "Report format"},
+                "title": {"type": "string", "description": "Report title"},
+                "headers": {"type": "array", "items": {"type": "string"}, "description": "Column headers (excel/csv/pdf table)"},
+                "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "Data rows — each row is a list of strings"},
+                "sections": {"type": "array", "items": {"type": "object"}, "description": "PDF sections: [{heading: str, body: str}, ...]"},
+                "summary": {"type": "object", "description": "Key-value summary pairs shown below table (excel only)"},
+                "filename": {"type": "string", "description": "Custom filename (auto-generated if omitted)"}
+            },
+            "required": ["format", "title"]
         }
     },
 ]
