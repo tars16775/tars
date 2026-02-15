@@ -23,6 +23,7 @@ import time
 import os
 import base64
 import tempfile
+import threading
 import urllib.parse
 
 from hands.cdp import CDP, CDP_PORT
@@ -33,6 +34,21 @@ from hands.cdp import CDP, CDP_PORT
 # ═══════════════════════════════════════════════════════
 
 _cdp = None
+_browser_lock = threading.Lock()  # Serializes all browser operations across agents
+
+
+def _with_browser_lock(func):
+    """Decorator that serializes browser operations.
+    
+    Prevents concurrent agents from interleaving CDP commands
+    (e.g., one agent navigating while another reads the page).
+    """
+    import functools
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _browser_lock:
+            return func(*args, **kwargs)
+    return wrapper
 
 
 def _ensure():
@@ -1146,3 +1162,21 @@ def web_search(query):
         return {"success": True, "content": text}
     except Exception as e:
         return {"success": False, "content": f"Search failed: {e}"}
+
+
+# ═══════════════════════════════════════════════════════
+#  Apply browser lock to ALL public act_* functions
+#  Prevents concurrent agents from interleaving CDP ops
+# ═══════════════════════════════════════════════════════
+
+def _apply_browser_locks():
+    """Wrap all act_* functions with _browser_lock at module init."""
+    import sys
+    _mod = sys.modules[__name__]
+    for name in dir(_mod):
+        if name.startswith("act_"):
+            fn = getattr(_mod, name)
+            if callable(fn):
+                setattr(_mod, name, _with_browser_lock(fn))
+
+_apply_browser_locks()

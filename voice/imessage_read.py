@@ -10,6 +10,7 @@ by polling the SQLite database.
 import sqlite3
 import time
 import os
+from collections import deque
 
 
 class IMessageReader:
@@ -18,6 +19,8 @@ class IMessageReader:
         self.poll_interval = config["imessage"]["poll_interval"]
         self.db_path = os.path.expanduser("~/Library/Messages/chat.db")
         self._last_message_rowid = self._get_latest_rowid()
+        # Idempotent dedup — bounded set of recently processed ROWIDs
+        self._seen_rowids = deque(maxlen=1000)
 
     def _get_db_connection(self):
         """Open a read-only connection to chat.db with timeout."""
@@ -53,6 +56,10 @@ class IMessageReader:
                 messages = []
                 for row in cursor.fetchall():
                     rowid, text, is_from_me, date = row
+                    # Idempotent: skip any ROWID we've already processed
+                    if rowid in self._seen_rowids:
+                        continue
+                    self._seen_rowids.append(rowid)
                     messages.append({
                         "rowid": rowid,
                         "text": text.strip(),

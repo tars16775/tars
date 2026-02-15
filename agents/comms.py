@@ -4,12 +4,16 @@
 ╠══════════════════════════════════════════════════════════════╣
 ║  Message passing between agents via the orchestrator brain.  ║
 ║  Brain is the central hub — no direct agent-to-agent comms.  ║
+║                                                              ║
+║  v2: Structured scratchpad — agents can share typed data     ║
+║  (selectors, URLs, extracted facts) not just strings.        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
 import time
+import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -18,9 +22,19 @@ class AgentMessage:
     from_agent: str
     to_agent: str
     content: str
-    msg_type: str = "info"       # info, request, result, handoff
+    msg_type: str = "info"       # info, request, result, handoff, scratchpad
     timestamp: float = field(default_factory=time.time)
     metadata: Dict = field(default_factory=dict)
+
+
+@dataclass
+class ScratchpadEntry:
+    """A typed structured data entry on the shared scratchpad."""
+    key: str                     # e.g., "login_selectors", "search_results"
+    data_type: str               # selectors, urls, facts, credentials, code, error
+    value: Any                   # The actual data (dict, list, str, etc.)
+    source_agent: str            # Who wrote it
+    timestamp: float = field(default_factory=time.time)
 
 
 class AgentComms:
@@ -29,13 +43,16 @@ class AgentComms:
     All communication flows through the brain (orchestrator):
       Agent A → Brain → Agent B
     
-    This tracks handoff context so agents can build on each
-    other's work without losing information.
+    v2: Includes a structured scratchpad where agents can read/write
+    typed data (selectors, URLs, extracted facts, error context) so
+    downstream agents don't have to re-discover information.
     """
 
     def __init__(self):
         self._messages: List[AgentMessage] = []
         self._handoff_context: Dict[str, str] = {}  # agent → context from prev agent
+        self._scratchpad: Dict[str, ScratchpadEntry] = {}  # key → entry
+        self._scratchpad_lock = threading.Lock()
 
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "info", metadata: Dict = None) -> AgentMessage:
@@ -50,19 +67,81 @@ class AgentComms:
         self._messages.append(msg)
         return msg
 
+    # ─── Structured Scratchpad ───────────────────────
+
+    def write_scratchpad(self, key: str, value: Any, data_type: str,
+                         source_agent: str) -> None:
+        """Write structured data to the shared scratchpad.
+        
+        Examples:
+            write_scratchpad("login_selectors", {"email": "#email", "password": "#pass"},
+                             "selectors", "browser")
+            write_scratchpad("search_results", ["url1", "url2"], "urls", "research")
+            write_scratchpad("api_key", "sk-...", "credentials", "coder")
+        """
+        entry = ScratchpadEntry(
+            key=key,
+            data_type=data_type,
+            value=value,
+            source_agent=source_agent,
+        )
+        with self._scratchpad_lock:
+            self._scratchpad[key] = entry
+
+        self.send(source_agent, "scratchpad", str(value)[:200],
+                  msg_type="scratchpad", metadata={"key": key, "data_type": data_type})
+
+    def read_scratchpad(self, key: str) -> Optional[Any]:
+        """Read a value from the scratchpad by key. Returns None if not found."""
+        with self._scratchpad_lock:
+            entry = self._scratchpad.get(key)
+            return entry.value if entry else None
+
+    def read_scratchpad_by_type(self, data_type: str) -> Dict[str, Any]:
+        """Read all scratchpad entries of a given type.
+        
+        Returns dict of {key: value} for all entries matching the type.
+        """
+        with self._scratchpad_lock:
+            return {
+                k: v.value for k, v in self._scratchpad.items()
+                if v.data_type == data_type
+            }
+
+    def get_scratchpad_summary(self) -> str:
+        """Get a human-readable summary of all scratchpad entries."""
+        with self._scratchpad_lock:
+            if not self._scratchpad:
+                return ""
+            lines = ["## Shared Scratchpad"]
+            for key, entry in self._scratchpad.items():
+                age = int(time.time() - entry.timestamp)
+                val_preview = str(entry.value)[:150]
+                lines.append(f"  [{entry.data_type}] {key} (by {entry.source_agent}, {age}s ago): {val_preview}")
+            return "\n".join(lines)
+
+    # ─── Handoff ─────────────────────────────────────
+
     def handoff(self, from_agent: str, to_agent: str, context: str,
                 task: str = "") -> str:
         """Create a handoff context when one agent passes work to another.
         
-        Returns the formatted context string to inject into the receiving agent.
+        v2: Also includes any relevant scratchpad data in the handoff.
         """
+        # Include scratchpad summary if there's data
+        scratchpad_info = self.get_scratchpad_summary()
+        
         handoff_text = (
             f"=== HANDOFF FROM {from_agent.upper()} AGENT ===\n"
             f"Previous agent ({from_agent}) worked on this task and provides context:\n"
             f"{context}\n"
             f"{'Task for you: ' + task if task else ''}\n"
-            f"=== END HANDOFF ==="
         )
+        
+        if scratchpad_info:
+            handoff_text += f"\n{scratchpad_info}\n"
+        
+        handoff_text += "=== END HANDOFF ==="
 
         self._handoff_context[to_agent] = handoff_text
 
@@ -77,8 +156,17 @@ class AgentComms:
         return handoff_text
 
     def get_handoff_context(self, agent_name: str) -> Optional[str]:
-        """Get any handoff context waiting for an agent, then clear it."""
+        """Get any handoff context waiting for an agent, then clear it.
+        
+        v2: Always includes scratchpad summary if available.
+        """
         ctx = self._handoff_context.pop(agent_name, None)
+        
+        # Even without an explicit handoff, include scratchpad if populated
+        if not ctx:
+            scratchpad_info = self.get_scratchpad_summary()
+            return scratchpad_info if scratchpad_info else None
+        
         return ctx
 
     def get_messages(self, agent: str = None, msg_type: str = None,
@@ -103,9 +191,11 @@ class AgentComms:
         return "\n".join(lines)
 
     def clear(self):
-        """Clear all messages and handoff context."""
+        """Clear all messages, handoff context, and scratchpad."""
         self._messages.clear()
         self._handoff_context.clear()
+        with self._scratchpad_lock:
+            self._scratchpad.clear()
 
 
 # Global singleton

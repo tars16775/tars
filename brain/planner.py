@@ -66,9 +66,9 @@ class TARSBrain:
         self.conversation_history = []
         self.max_retries = config["safety"]["max_retries"]
         
-        # Context management
-        self.max_history_messages = 80      # Keep more context for complex tasks
-        self.compaction_threshold = 55      # Compact at this many messages
+        # Context management — token-aware compaction
+        self.max_history_messages = 80      # Hard cap (safety net)
+        self.compaction_token_threshold = 80000  # Compact when est. tokens exceed this
         self._compacted_summary = ""        # Compressed old context
         self.max_tool_loops = 50            # Max tool call loops per think() call
         self._tool_loop_count = 0           # Track current loop count
@@ -104,16 +104,44 @@ class TARSBrain:
         )
         return base_prompt + extra_context
 
+    @staticmethod
+    def _estimate_tokens(messages):
+        """Estimate token count for a message list.
+        
+        Uses the ~4 chars/token heuristic (accurate within ±15% for English).
+        Much faster than calling tiktoken, zero dependencies.
+        """
+        total_chars = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        total_chars += len(str(item.get("content", "")))
+                    elif hasattr(item, "text"):
+                        total_chars += len(item.text or "")
+                    elif hasattr(item, "input"):
+                        total_chars += len(str(item.input or ""))
+        return total_chars // 4
+
     def _compact_history(self):
         """
-        Compress old conversation history into a summary.
+        Token-aware compaction: compress old conversation history when
+        estimated token usage exceeds the threshold.
+        
         Keeps the last 20 messages intact, summarizes the rest.
         This prevents context overflow while preserving key decisions.
         
-        v4: Also triggers if total estimated tokens exceed a safe threshold,
-        since tool results can be very large.
+        Triggers on EITHER:
+          - Estimated tokens > compaction_token_threshold (primary)
+          - Message count > max_history_messages (hard safety cap)
         """
-        if len(self.conversation_history) < self.compaction_threshold:
+        est_tokens = self._estimate_tokens(self.conversation_history)
+        msg_count = len(self.conversation_history)
+        
+        if est_tokens < self.compaction_token_threshold and msg_count < self.max_history_messages:
             return
             
         # Split: old messages to compact vs recent to keep
@@ -155,7 +183,7 @@ class TARSBrain:
             self._compacted_summary = head + "\n... (compacted) ...\n" + tail
         self.conversation_history = recent
         
-        print(f"  📦 Compacted history: {len(old_messages)} old messages → summary, keeping {len(recent)} recent")
+        print(f"  📦 Compacted history: {len(old_messages)} msgs (~{est_tokens} tokens) → summary, keeping {len(recent)} recent")
 
     def think(self, user_message, use_heavy=None):
         """

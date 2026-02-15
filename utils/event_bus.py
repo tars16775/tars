@@ -19,8 +19,10 @@ class EventBus:
     """Central event bus — all TARS events flow through here."""
 
     def __init__(self, max_history=500):
-        self.subscribers = []          # WebSocket clients
+        self.subscribers = []          # WebSocket clients (async)
         self._sub_lock = threading.Lock()  # Thread-safe subscriber management
+        self._sync_subs = {}           # event_type → [callable] for sync listeners
+        self._sync_lock = threading.Lock()
         self.history = deque(maxlen=max_history)  # Recent events for new clients
         self._loop = None
         self._stats = {
@@ -71,6 +73,14 @@ class EventBus:
             for d in dead:
                 self.subscribers.remove(d)
 
+        # Notify synchronous listeners (for in-process progress tracking)
+        with self._sync_lock:
+            for cb in self._sync_subs.get(event_type, []):
+                try:
+                    cb(data or {})
+                except Exception:
+                    pass
+
     def _update_stats(self, event_type, data):
         """Update running statistics."""
         if event_type == "tool_result":
@@ -113,6 +123,22 @@ class EventBus:
         with self._sub_lock:
             if ws_send in self.subscribers:
                 self.subscribers.remove(ws_send)
+
+    def subscribe_sync(self, event_type, callback):
+        """Subscribe a synchronous callback to a specific event type.
+        
+        Used by in-process listeners (e.g., progress streaming to iMessage).
+        The callback receives the event data dict and runs on the emitting thread.
+        """
+        with self._sync_lock:
+            self._sync_subs.setdefault(event_type, []).append(callback)
+
+    def unsubscribe_sync(self, event_type, callback):
+        """Remove a synchronous callback."""
+        with self._sync_lock:
+            listeners = self._sync_subs.get(event_type, [])
+            if callback in listeners:
+                listeners.remove(callback)
 
     def get_history(self):
         """Get all stored events for new clients."""

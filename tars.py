@@ -129,6 +129,7 @@ class TARS:
         self.kill_words = self.config["safety"]["kill_words"]
         self._kill_event = threading.Event()  # Shared kill signal — stops running agents
         self._task_queue = queue.Queue()  # Thread-safe task queue
+        self._progress_interval = self.config.get("imessage", {}).get("progress_interval", 30)  # Seconds between progress updates
 
         self.executor = ToolExecutor(
             self.config, self.imessage_sender, self.imessage_reader, self.memory, self.logger,
@@ -274,8 +275,18 @@ class TARS:
                 # Reset deployment tracker (fresh agent budget) but NOT conversation
                 self.executor.reset_task_tracker()
 
+                # ── Streaming progress: debounced updates to iMessage ──
+                progress_collector = _ProgressCollector(
+                    sender=self.imessage_sender,
+                    interval=self._progress_interval,
+                )
+                progress_collector.start()
+
                 # Send to brain — it classifies and handles everything
                 response = self.brain.think(task)
+
+                # Stop progress updates, send any remaining
+                progress_collector.stop()
 
                 # Log the result
                 self.logger.info(f"Cycle complete. Response: {response[:200]}")
@@ -291,6 +302,77 @@ class TARS:
                 event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
             finally:
                 self._task_queue.task_done()
+
+
+class _ProgressCollector:
+    """Collects agent/tool events and sends debounced progress updates to iMessage.
+    
+    Subscribes to event_bus for 'agent_started', 'agent_completed', 'tool_called'
+    events. Every `interval` seconds, if there's new activity, sends a compact
+    progress update via iMessage so the user knows what TARS is doing.
+    """
+
+    def __init__(self, sender, interval=30):
+        self._sender = sender
+        self._interval = interval
+        self._events = []
+        self._lock = threading.Lock()
+        self._timer = None
+        self._running = False
+
+    def start(self):
+        self._running = True
+        event_bus.subscribe_sync("agent_started", self._on_event)
+        event_bus.subscribe_sync("agent_completed", self._on_event)
+        event_bus.subscribe_sync("tool_called", self._on_event)
+        self._schedule_tick()
+
+    def stop(self):
+        self._running = False
+        event_bus.unsubscribe_sync("agent_started", self._on_event)
+        event_bus.unsubscribe_sync("agent_completed", self._on_event)
+        event_bus.unsubscribe_sync("tool_called", self._on_event)
+        if self._timer:
+            self._timer.cancel()
+
+    def _on_event(self, data):
+        with self._lock:
+            self._events.append(data)
+
+    def _schedule_tick(self):
+        if not self._running:
+            return
+        self._timer = threading.Timer(self._interval, self._tick)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _tick(self):
+        if not self._running:
+            return
+        with self._lock:
+            events = self._events[:]
+            self._events.clear()
+
+        if events:
+            # Build a compact progress summary
+            parts = []
+            for ev in events[-5:]:  # Last 5 events max
+                if "agent" in ev and "task" in ev:
+                    parts.append(f"🚀 {ev['agent']}: {ev['task'][:60]}")
+                elif "agent" in ev and "success" in ev:
+                    status = "✅" if ev["success"] else "❌"
+                    parts.append(f"{status} {ev['agent']} done ({ev.get('steps', '?')} steps)")
+                elif "tool_name" in ev:
+                    parts.append(f"🔧 {ev['tool_name']}")
+
+            if parts:
+                msg = "⏳ Progress:\n" + "\n".join(parts)
+                try:
+                    self._sender.send(msg)
+                except Exception:
+                    pass
+
+        self._schedule_tick()
 
 
 # ─── Entry Point ─────────────────────────────────────

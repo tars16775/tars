@@ -1,0 +1,10 @@
+feat: world-class upgrades — 8 features for production resilience
+
+1. Exponential backoff with full jitter (llm_client.py)
+2. Idempotent message dedup by ROWID (imessage_read.py)
+3. Browser concurrency lock (browser.py)
+4. Health heartbeat endpoint /api/health (server.py)
+5. Token-aware smart compaction (planner.py)
+6. Streaming progress to iMessage (tars.py + event_bus.py)
+7. Structured agent scratchpad (comms.py)
+8. Watchdog auto-restart (com.tars.agent.plist + watchdog.sh)

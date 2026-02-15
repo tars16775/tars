@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import mimetypes
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import websockets
@@ -28,7 +29,10 @@ HTTP_PORT = 8420
 
 
 class DashboardHTTPHandler(SimpleHTTPRequestHandler):
-    """Serve dashboard static files."""
+    """Serve dashboard static files + /api/health endpoint."""
+
+    # Class-level reference so the handler can reach the server instance
+    _server_ref = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=DASHBOARD_DIR, **kwargs)
@@ -40,9 +44,65 @@ class DashboardHTTPHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         super().end_headers()
 
+    def do_GET(self):
+        """Handle GET — serve /api/health or fall through to static files."""
+        if self.path == "/api/health":
+            self._handle_health()
+        else:
+            super().do_GET()
+
+    def _handle_health(self):
+        """Return JSON health status: uptime, agents, queue, memory."""
+        import resource
+        try:
+            uptime = time.time() - TARSServer._boot_time
+            agents = agent_monitor.get_dashboard_data()
+            stats = event_bus.get_stats()
+
+            # Queue depth (if tars instance available)
+            queue_depth = 0
+            last_msg_time = None
+            if DashboardHTTPHandler._server_ref and DashboardHTTPHandler._server_ref.tars:
+                tars = DashboardHTTPHandler._server_ref.tars
+                queue_depth = tars._task_queue.qsize()
+                brain = getattr(tars, 'brain', None)
+                if brain:
+                    last_msg_time = getattr(brain, '_last_message_time', None)
+
+            # Memory usage (RSS in MB)
+            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            # macOS returns bytes, Linux returns KB
+            rss_mb = rss_kb / (1024 * 1024) if rss_kb > 1_000_000 else rss_kb / 1024
+
+            health = {
+                "status": "healthy",
+                "uptime_seconds": round(uptime, 1),
+                "uptime_human": f"{int(uptime // 3600)}h {int((uptime % 3600) // 60)}m {int(uptime % 60)}s",
+                "queue_depth": queue_depth,
+                "last_message_time": last_msg_time,
+                "memory_rss_mb": round(rss_mb, 1),
+                "agents": agents,
+                "api_stats": stats,
+            }
+
+            payload = json.dumps(health, indent=2).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except Exception as e:
+            err = json.dumps({"status": "error", "message": str(e)}).encode()
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(err)
+
 
 class TARSServer:
     """Runs the dashboard HTTP server + WebSocket server."""
+
+    _boot_time = time.time()  # Server start timestamp for uptime calc
 
     def __init__(self, memory_manager=None, tars_instance=None):
         self.memory = memory_manager
@@ -52,6 +112,7 @@ class TARSServer:
 
     def start(self):
         """Start both servers in a background thread."""
+        DashboardHTTPHandler._server_ref = self  # Wire the server ref for /api/health
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 

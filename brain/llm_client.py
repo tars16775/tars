@@ -12,7 +12,9 @@ is behind the scenes.
 """
 
 import json
+import random
 import re
+import time as _time
 import uuid
 
 # ─────────────────────────────────────────────
@@ -479,12 +481,23 @@ class LLMClient:
 
     # ── Non-streaming call (used by agents) ──
 
+    @staticmethod
+    def _backoff_delay(attempt, base=0.5, cap=30.0):
+        """Exponential backoff with full jitter: delay = random(0, min(cap, base * 2^attempt))."""
+        exp = min(cap, base * (2 ** attempt))
+        return random.uniform(0, exp)
+
     def create(self, model, max_tokens, system, tools, messages, temperature=0):
         """Create a completion (non-streaming). Returns normalized LLMResponse.
         
         Includes recovery logic for Groq/Llama tool_use_failed errors —
         the model sometimes generates malformed XML tool calls which the
         API rejects. We parse the failed generation and recover the tool call.
+        
+        Retry strategy: exponential backoff with full jitter.
+          attempt 1: random(0, 1.0s)
+          attempt 2: random(0, 2.0s)
+          attempt 3: random(0, 4.0s)  … capped at 30s
         
         temperature=0 by default for deterministic tool calls.
         """
@@ -499,11 +512,10 @@ class LLMClient:
             )
             return self._wrap_anthropic_response(resp)
         else:
-            import time as _time
             openai_tools = _anthropic_to_openai_tools(tools)
             openai_messages = _convert_history_for_openai(messages, system)
 
-            max_retries = 3
+            max_retries = 5
             for attempt in range(1, max_retries + 1):
                 try:
                     resp = self._client.chat.completions.create(
@@ -522,14 +534,25 @@ class LLMClient:
                         recovered = _parse_failed_tool_call(e)
                         if recovered:
                             return recovered
-                        # If recovery failed, retry with a nudge
+                        # If recovery failed, retry with backoff
                         if attempt < max_retries:
-                            _time.sleep(0.5 * attempt)
+                            delay = self._backoff_delay(attempt)
+                            print(f"    ⏳ tool_use_failed — retry {attempt}/{max_retries} in {delay:.1f}s")
+                            _time.sleep(delay)
                             continue
 
-                    # Rate limit — just retry
+                    # Rate limit — retry with longer backoff
                     if "rate_limit" in error_str.lower() and attempt < max_retries:
-                        _time.sleep(1.0 * attempt)
+                        delay = self._backoff_delay(attempt, base=1.0, cap=60.0)
+                        print(f"    ⏳ Rate limited — retry {attempt}/{max_retries} in {delay:.1f}s")
+                        _time.sleep(delay)
+                        continue
+
+                    # Server errors (5xx) — transient, retry
+                    if any(code in error_str for code in ("500", "502", "503", "529")) and attempt < max_retries:
+                        delay = self._backoff_delay(attempt, base=1.0, cap=30.0)
+                        print(f"    ⏳ Server error — retry {attempt}/{max_retries} in {delay:.1f}s")
+                        _time.sleep(delay)
                         continue
 
                     raise
