@@ -171,19 +171,28 @@ class TARS:
         # Dashboard URL (don't auto-open — it interferes with Chrome browser tools)
         print(f"  🌐 Open dashboard: http://localhost:8420\n")
 
+        # Notify owner that TARS is online and ready
+        try:
+            self.imessage_sender.send("✅ TARS is online and all systems are functional. Ready for commands.")
+            print("  📱 Startup notification sent via iMessage")
+        except Exception as e:
+            print(f"  ⚠️ Could not send startup iMessage: {e}")
+
         if initial_task:
             # Start with a task from command line
             print(f"  📋 Initial task: {initial_task}\n")
             self._process_task(initial_task)
         else:
-            # No task — wait for instructions (no iMessage spam)
-            print("  📱 Waiting for instructions...\n")
+            # No task — wait for messages (conversation-ready)
+            print("  📱 Listening for messages...\n")
 
         # Main loop — keep working forever
         while self.running:
             try:
-                # Wait for a new task via iMessage
-                print("  ⏳ Waiting for next task via iMessage...")
+                # Wait for a new message via iMessage
+                conv_msgs = self.brain._message_count
+                conv_ctx = len(self.brain.conversation_history)
+                print(f"  ⏳ Waiting for message... (conversation: {conv_msgs} msgs, {conv_ctx} ctx entries)")
                 reply = self.imessage_reader.wait_for_reply(timeout=3600)  # 1 hour timeout
 
                 if reply.get("success"):
@@ -196,11 +205,11 @@ class TARS:
                         event_bus.emit("kill_switch", {"source": "imessage"})
                         continue
 
-                    # Process the task
+                    # Process the message (brain classifies: chat vs task)
                     self._process_task(task)
                 else:
                     # Timed out — just keep waiting silently
-                    print("  💤 Still waiting for task...")
+                    print("  💤 Still waiting...")
 
             except KeyboardInterrupt:
                 self._shutdown()
@@ -210,33 +219,39 @@ class TARS:
                 time.sleep(5)
 
     def _process_task(self, task):
-        """Process a single task through the Claude brain."""
+        """
+        Process a message through the TARS brain.
+        
+        v4: The brain handles classification (chat vs task) internally.
+        We DON'T reset conversation history — TARS remembers the flow.
+        We only reset the deployment budget so each message gets fresh agents.
+        """
         print(f"\n  {'═' * 50}")
-        print(f"  📋 Task: {task}")
+        print(f"  📨 Message: {task}")
         print(f"  {'═' * 50}\n")
 
-        self.logger.info(f"New task: {task}")
+        self.logger.info(f"New message: {task}")
         event_bus.emit("task_received", {"task": task, "source": "agent"})
         event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
 
-        # Reset deployment tracker so each task gets a fresh budget
+        # Reset deployment tracker (fresh agent budget) but NOT conversation
         self.executor.reset_task_tracker()
 
-        # Update context
+        # Update context with current task
         self.memory.update_context(
             f"# Current Task\n\n{task}\n\nStarted: {datetime.now().isoformat()}\n"
         )
 
-        # Send task to Claude brain
+        # Send to brain — it classifies and handles everything
         response = self.brain.think(task)
 
         # Log the result
-        self.logger.info(f"Task completed. Response: {response[:200]}")
+        self.logger.info(f"Cycle complete. Response: {response[:200]}")
 
         event_bus.emit("status_change", {"status": "online", "label": "ONLINE"})
 
         print(f"\n  {'─' * 50}")
-        print(f"  ✅ Task cycle complete")
+        print(f"  ✅ Cycle complete")
         print(f"  {'─' * 50}\n")
 
 

@@ -457,6 +457,8 @@ class LLMClient:
         "together": "https://api.together.xyz/v1",
         "openrouter": "https://openrouter.ai/api/v1",
         "openai": "https://api.openai.com/v1",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "deepseek": "https://api.deepseek.com/v1",
     }
 
     def __init__(self, provider, api_key, **kwargs):
@@ -477,12 +479,14 @@ class LLMClient:
 
     # ── Non-streaming call (used by agents) ──
 
-    def create(self, model, max_tokens, system, tools, messages):
+    def create(self, model, max_tokens, system, tools, messages, temperature=0):
         """Create a completion (non-streaming). Returns normalized LLMResponse.
         
         Includes recovery logic for Groq/Llama tool_use_failed errors —
         the model sometimes generates malformed XML tool calls which the
         API rejects. We parse the failed generation and recover the tool call.
+        
+        temperature=0 by default for deterministic tool calls.
         """
         if self._mode == "anthropic":
             resp = self._client.messages.create(
@@ -491,6 +495,7 @@ class LLMClient:
                 system=system,
                 tools=tools,
                 messages=messages,
+                temperature=temperature,
             )
             return self._wrap_anthropic_response(resp)
         else:
@@ -506,6 +511,7 @@ class LLMClient:
                         max_tokens=max_tokens,
                         tools=openai_tools if openai_tools else None,
                         messages=openai_messages,
+                        temperature=temperature,
                     )
                     return _openai_response_to_normalized(resp)
                 except Exception as e:
@@ -530,26 +536,35 @@ class LLMClient:
 
     # ── Streaming call (used by planner) ──
 
-    def stream(self, model, max_tokens, system, tools, messages):
-        """Stream a completion. Returns context manager with Anthropic-like interface."""
+    def stream(self, model, max_tokens, system, tools, messages, temperature=None):
+        """Stream a completion. Returns context manager with Anthropic-like interface.
+        
+        temperature=None lets the provider use its default for brain streaming
+        (slightly creative for conversation, but structured for tool calls).
+        """
         if self._mode == "anthropic":
-            return self._client.messages.stream(
+            kwargs = dict(
                 model=model,
                 max_tokens=max_tokens,
                 system=system,
                 tools=tools,
                 messages=messages,
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            return self._client.messages.stream(**kwargs)
         else:
             openai_tools = _anthropic_to_openai_tools(tools)
             openai_messages = _convert_history_for_openai(messages, system)
-            return OpenAIStreamWrapper(
-                self._client,
+            kwargs = dict(
                 model=model,
                 max_tokens=max_tokens,
                 tools=openai_tools if openai_tools else None,
                 messages=openai_messages,
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            return OpenAIStreamWrapper(self._client, **kwargs)
 
     # ── Helper ──
 

@@ -950,6 +950,140 @@ def act_handle_dialog(action="accept"):
 
 
 # ═══════════════════════════════════════════════════════
+#  Press and Hold — for CAPTCHA buttons
+# ═══════════════════════════════════════════════════════
+
+def act_press_and_hold(target, duration=10):
+    """Press and hold an element (or coordinates) for N seconds.
+
+    For CAPTCHA 'press and hold' buttons. Dispatches real CDP mouse
+    events with human-like micro-jitter during the hold.
+
+    target: CSS selector, text, or 'iframe:hsprotect' for auto-detect.
+    duration: seconds to hold (default 10).
+    """
+    _ensure()
+    duration = int(duration)
+    if duration < 1:
+        duration = 1
+    if duration > 30:
+        duration = 30
+
+    x, y = None, None
+
+    # Auto-detect CAPTCHA iframe position
+    if target.lower() in ('captcha', 'iframe:hsprotect', 'hold_button', 'press_and_hold'):
+        iframe_pos = _js("""
+            (function() {
+                var iframe = document.querySelector('iframe[src*="hsprotect"]');
+                if (!iframe) {
+                    // Fallback: any iframe near "press and hold" text
+                    var iframes = document.querySelectorAll('iframe');
+                    for (var i = 0; i < iframes.length; i++) {
+                        var r = iframes[i].getBoundingClientRect();
+                        if (r.width > 100 && r.height > 30 && r.width < 500 && r.height < 200) {
+                            iframe = iframes[i];
+                            break;
+                        }
+                    }
+                }
+                if (!iframe) return '';
+                var r = iframe.getBoundingClientRect();
+                return JSON.stringify({
+                    x: Math.round(r.x + r.width/2),
+                    y: Math.round(r.y + r.height/2)
+                });
+            })()
+        """)
+        if iframe_pos and not iframe_pos.startswith("JS_ERROR"):
+            try:
+                pos = json.loads(iframe_pos)
+                x, y = pos["x"], pos["y"]
+            except Exception:
+                pass
+    else:
+        # Try as selector/text
+        coords = _find_element_coords(target)
+        if coords:
+            x, y = coords
+
+    if x is None or y is None:
+        return "ERROR: Could not find element to press and hold"
+
+    # Move mouse to position first (like a human approaching)
+    _cdp.send("Input.dispatchMouseEvent", {
+        "type": "mouseMoved", "x": x, "y": y
+    })
+    time.sleep(0.3)
+
+    # Mouse down
+    _cdp.send("Input.dispatchMouseEvent", {
+        "type": "mousePressed", "x": x, "y": y,
+        "button": "left", "clickCount": 1,
+    })
+
+    # Hold with human-like micro-jitter
+    steps = duration * 4  # 4 movements per second
+    for i in range(steps):
+        time.sleep(0.25)
+        jx = x + (i % 3) - 1   # -1, 0, +1 pixel jitter
+        jy = y + ((i + 1) % 3) - 1
+        _cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved", "x": jx, "y": jy,
+            "button": "left",
+        })
+
+    # Release
+    _cdp.send("Input.dispatchMouseEvent", {
+        "type": "mouseReleased", "x": x, "y": y,
+        "button": "left", "clickCount": 1,
+    })
+
+    time.sleep(2)
+    title = _js("document.title") or ""
+    return f"Held at ({x}, {y}) for {duration}s — page: {title}"
+
+
+def act_solve_captcha():
+    """Auto-detect and solve CAPTCHA on the current page.
+
+    Currently handles:
+    - 'Press and hold' CAPTCHAs (hsprotect / Microsoft)
+    - Standard hold-button CAPTCHAs
+
+    Returns result string describing what happened.
+    """
+    _ensure()
+
+    # Check if this is a press-and-hold CAPTCHA
+    page_text = _js("document.body ? document.body.innerText.substring(0, 2000) : ''")
+    lower = (page_text or "").lower()
+
+    if "press and hold" in lower or "press & hold" in lower:
+        # Find the CAPTCHA iframe or button
+        result = act_press_and_hold("captcha", duration=10)
+        if "ERROR" in result:
+            # Fallback: try pressing at any visible interactive iframe
+            result = act_press_and_hold("captcha", duration=12)
+        if "ERROR" not in result:
+            time.sleep(3)
+            new_title = _js("document.title") or ""
+            new_text = _js("document.body ? document.body.innerText.substring(0, 500) : ''")
+            if "press and hold" not in (new_text or "").lower():
+                return f"CAPTCHA solved! Page now: {new_title}"
+            else:
+                return "CAPTCHA press-and-hold attempted but page still shows challenge. May need retry."
+        return result
+
+    # Check for other CAPTCHA types
+    challenge = _detect_challenge()
+    if challenge:
+        return f"Detected challenge: {challenge} — cannot auto-solve this type yet."
+
+    return "No CAPTCHA detected on this page."
+
+
+# ═══════════════════════════════════════════════════════
 #  CAPTCHA/Challenge Detection
 # ═══════════════════════════════════════════════════════
 
@@ -964,6 +1098,8 @@ def _detect_challenge():
 
             if (title.indexOf('unusual traffic') !== -1) return 'Blocked: unusual traffic';
             if (title.indexOf('captcha') !== -1) return 'Blocked: CAPTCHA page';
+            if (lower.indexOf('press and hold') !== -1) return 'press_and_hold';
+            if (title.indexOf('prove you') !== -1) return 'press_and_hold';
 
             if (body.length < 1500) {
                 if (lower.indexOf('verify you are human') !== -1) return 'Blocked: human verification';

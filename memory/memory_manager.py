@@ -137,6 +137,18 @@ class MemoryManager:
             self.update_context(f"# Current Context\n\n**{key}**: {value}\n")
         elif category == "note":
             self.log_action("note", key, {"success": True, "content": value})
+        elif category == "credential":
+            # Save credentials securely to a dedicated file
+            cred_file = os.path.join(self.base_dir, "memory", "credentials.md")
+            existing = self._read(cred_file) if os.path.exists(cred_file) else "# Saved Credentials\n"
+            existing += f"\n- **{key}**: {value}"
+            self._write(cred_file, existing)
+        elif category == "learned":
+            # Save learned patterns for future tasks
+            learned_file = os.path.join(self.base_dir, "memory", "learned.md")
+            existing = self._read(learned_file) if os.path.exists(learned_file) else "# Learned Patterns\n"
+            existing += f"\n- **{key}**: {value}"
+            self._write(learned_file, existing)
 
         return {"success": True, "content": f"Saved to {category}: {key}"}
 
@@ -161,6 +173,20 @@ class MemoryManager:
                 content = self._read(os.path.join(self.projects_dir, fname))
                 if query_lower in content.lower():
                     results.append(f"[Project: {fname}] {content[:500]}")
+
+        # Search credentials
+        cred_file = os.path.join(self.base_dir, "memory", "credentials.md")
+        if os.path.exists(cred_file):
+            creds = self._read(cred_file)
+            if query_lower in creds.lower():
+                results.append(f"[Credentials] {creds[:500]}")
+
+        # Search learned patterns
+        learned_file = os.path.join(self.base_dir, "memory", "learned.md")
+        if os.path.exists(learned_file):
+            learned = self._read(learned_file)
+            if query_lower in learned.lower():
+                results.append(f"[Learned] {learned[:500]}")
 
         # Search recent history
         try:

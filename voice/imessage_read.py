@@ -47,6 +47,7 @@ class IMessageReader:
                   AND m.is_from_me = 0
                   AND m.text IS NOT NULL
                   AND m.text != ''
+                  AND m.associated_message_type = 0
                 ORDER BY m.ROWID ASC
             """, (self._last_message_rowid, self.phone))
 

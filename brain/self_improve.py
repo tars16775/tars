@@ -125,12 +125,12 @@ class SelfImproveEngine:
         """Get statistics for all agents (for dashboard)."""
         return self.memory.get_all_stats()
 
-    async def run_post_task_review(self, agent_name: str, task: str,
-                                    result: Dict) -> Optional[str]:
+    def run_post_task_review(self, agent_name: str, task: str,
+                             result: Dict) -> Optional[str]:
         """Run an LLM-powered post-task review to extract learnings.
         
-        This is an optional deep analysis — only run for significant
-        failures or complex successes.
+        This is a synchronous deep analysis — only run for significant
+        failures or complex successes. Saves learnings to memory.
         """
         if not self.llm_client or not self.model:
             return None
@@ -158,6 +158,8 @@ Keep it concise and actionable."""
             response = self.llm_client.create(
                 model=self.model,
                 max_tokens=300,
+                system="You are a concise task reviewer. Analyze agent outcomes and provide actionable learnings.",
+                tools=[],
                 messages=[{"role": "user", "content": review_prompt}],
             )
 
@@ -166,6 +168,20 @@ Keep it concise and actionable."""
                 for block in response.content:
                     if hasattr(block, "text"):
                         review += block.text
+            elif isinstance(response, dict):
+                # OpenAI-compatible format
+                choices = response.get("choices", [])
+                if choices:
+                    review = choices[0].get("message", {}).get("content", "")
+
+            if review:
+                # Save the learning to memory for future reference
+                self.memory.record_success(
+                    agent_name=agent_name,
+                    task=f"[POST-REVIEW] {task}",
+                    summary=review,
+                    steps=0,
+                )
 
             return review if review else None
 

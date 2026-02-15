@@ -83,11 +83,18 @@ class EventBus:
             self._stats["total_tokens_out"] += tokens_out
             self._stats["model_usage"][model] = self._stats["model_usage"].get(model, 0) + 1
 
-            # Estimate cost
-            if "haiku" in model:
+            # Estimate cost (most providers are free or near-free)
+            model_lower = model.lower()
+            if "gemini" in model_lower or "llama" in model_lower:
+                cost = 0.0  # Gemini Flash and Groq Llama are free
+            elif "haiku" in model_lower:
                 cost = (tokens_in * 0.80 + tokens_out * 4.00) / 1_000_000
-            else:
+            elif "claude" in model_lower or "sonnet" in model_lower or "opus" in model_lower:
                 cost = (tokens_in * 3.00 + tokens_out * 15.00) / 1_000_000
+            elif "gpt-4" in model_lower:
+                cost = (tokens_in * 10.00 + tokens_out * 30.00) / 1_000_000
+            else:
+                cost = 0.0  # Default free for unknown models
             self._stats["total_cost"] += cost
 
     def subscribe(self, ws_send):

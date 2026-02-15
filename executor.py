@@ -6,11 +6,22 @@
 ║  direct handlers. Tracks ALL deployments so the brain sees   ║
 ║  what already failed and can make smarter decisions.         ║
 ║                                                              ║
+║  Phase 1-5 Upgrades:                                         ║
+║    - scan_environment: Full Mac state awareness              ║
+║    - verify_result: Post-deployment verification             ║
+║    - checkpoint: Progress saving for resume                  ║
+║    - Smart recovery ladder with failure enrichment           ║
+║                                                              ║
 ║  Key design: The executor NEVER silently retries the same    ║
 ║  thing. Every failure goes back to the brain with full       ║
 ║  context so the LLM can reason about the next move.          ║
 ╚══════════════════════════════════════════════════════════════╝
 """
+
+import os
+import json
+import subprocess
+from datetime import datetime
 
 from brain.llm_client import LLMClient
 from brain.self_improve import SelfImproveEngine
@@ -38,7 +49,8 @@ AGENT_CLASSES = {
 }
 
 # Hard limit: max agent deployments per brain task cycle
-MAX_DEPLOYMENTS_PER_TASK = 8
+# v3: Increased for autonomous multi-step tasks (think+scan+deploy+verify = 4 tools per subtask)
+MAX_DEPLOYMENTS_PER_TASK = 12
 
 
 class ToolExecutor:
@@ -55,15 +67,30 @@ class ToolExecutor:
         # Every deployment and its result, so brain sees full history
         self._deployment_log = []  # [{agent, task, success, steps, reason}]
 
-        # LLM client for agents
+        # ── Dual-provider: agents use agent_llm (fast/free) ──
+        agent_cfg = config.get("agent_llm")
         llm_cfg = config["llm"]
-        self.llm_client = LLMClient(
-            provider=llm_cfg["provider"],
-            api_key=llm_cfg["api_key"],
-            base_url=llm_cfg.get("base_url"),
-        )
-        self.heavy_model = llm_cfg["heavy_model"]
-        self.fast_model = llm_cfg.get("fast_model", self.heavy_model)
+        
+        if agent_cfg and agent_cfg.get("api_key"):
+            # Dedicated agent provider (e.g. Groq for fast execution)
+            self.llm_client = LLMClient(
+                provider=agent_cfg["provider"],
+                api_key=agent_cfg["api_key"],
+                base_url=agent_cfg.get("base_url"),
+            )
+            self.heavy_model = agent_cfg["model"]
+            self.fast_model = agent_cfg["model"]
+            print(f"  🤖 Agents: {agent_cfg['provider']}/{self.heavy_model}")
+        else:
+            # Fallback: single provider
+            self.llm_client = LLMClient(
+                provider=llm_cfg["provider"],
+                api_key=llm_cfg["api_key"],
+                base_url=llm_cfg.get("base_url"),
+            )
+            self.heavy_model = llm_cfg["heavy_model"]
+            self.fast_model = llm_cfg.get("fast_model", self.heavy_model)
+        
         self.phone = config["imessage"]["owner_phone"]
 
         # Agent memory + self-improvement engine
@@ -158,6 +185,18 @@ class ToolExecutor:
             event_bus.emit("thinking", {"text": thought, "model": "brain"})
             return {"success": True, "content": "Thought recorded. Continue with your plan."}
 
+        # ─── Phase 2: Environmental Awareness ──
+        elif tool_name == "scan_environment":
+            return self._scan_environment(inp.get("checks", ["all"]))
+
+        # ─── Phase 3: Verification Loop ──
+        elif tool_name == "verify_result":
+            return self._verify_result(inp["type"], inp["check"], inp.get("expected", ""))
+
+        # ─── Phase 8: Checkpoint ──
+        elif tool_name == "checkpoint":
+            return self._checkpoint(inp["completed"], inp["remaining"])
+
         # ─── Legacy tool names ──
         elif tool_name == "web_task":
             return self._deploy_agent("browser", inp["task"])
@@ -168,6 +207,256 @@ class ToolExecutor:
 
         else:
             return {"success": False, "error": True, "content": f"Unknown tool: {tool_name}"}
+
+    def _scan_environment(self, checks):
+        """
+        Phase 2: Environmental Awareness
+        Scan the current Mac state so the brain can make informed decisions.
+        """
+        results = []
+        check_set = set(checks)
+        do_all = "all" in check_set
+
+        # ── Running applications ──
+        if do_all or "apps" in check_set:
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e",
+                     'tell application "System Events" to get name of every process whose background only is false'],
+                    capture_output=True, text=True, timeout=10
+                )
+                apps = r.stdout.strip()
+                results.append(f"## Running Apps\n{apps}")
+            except Exception as e:
+                results.append(f"## Running Apps\n⚠️ Could not check: {e}")
+
+        # ── Browser tabs ──
+        if do_all or "tabs" in check_set:
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e", '''
+                    tell application "Google Chrome"
+                        set tabInfo to ""
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                set tabInfo to tabInfo & (URL of t) & " | " & (title of t) & linefeed
+                            end repeat
+                        end repeat
+                        return tabInfo
+                    end tell
+                    '''],
+                    capture_output=True, text=True, timeout=10
+                )
+                tabs = r.stdout.strip()
+                if tabs:
+                    results.append(f"## Browser Tabs\n{tabs}")
+                else:
+                    results.append("## Browser Tabs\nNo tabs open or Chrome not running")
+            except Exception as e:
+                results.append(f"## Browser Tabs\nChrome not running or error: {e}")
+
+        # ── Current directory files ──
+        if do_all or "files" in check_set:
+            try:
+                cwd = os.getcwd()
+                items = os.listdir(cwd)[:30]
+                file_list = "\n".join(f"  {'📁' if os.path.isdir(os.path.join(cwd, f)) else '📄'} {f}" for f in sorted(items))
+                results.append(f"## Current Directory ({cwd})\n{file_list}")
+            except Exception as e:
+                results.append(f"## Current Directory\n⚠️ Error: {e}")
+
+        # ── Network ──
+        if do_all or "network" in check_set:
+            try:
+                r = subprocess.run(
+                    ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "5", "https://google.com"],
+                    capture_output=True, text=True, timeout=10
+                )
+                status = r.stdout.strip()
+                if status == "200" or status == "301":
+                    results.append("## Network\n✅ Internet connected")
+                else:
+                    results.append(f"## Network\n⚠️ HTTP status {status} — may have issues")
+            except Exception:
+                results.append("## Network\n❌ No internet connection")
+
+        # ── System info ──
+        if do_all or "system" in check_set:
+            try:
+                # Disk space
+                disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=5)
+                disk_line = disk.stdout.strip().split("\n")[-1] if disk.stdout else "unknown"
+
+                # Battery
+                batt = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5)
+                batt_info = batt.stdout.strip().split("\n")[-1] if batt.stdout else "unknown"
+
+                # Uptime
+                up = subprocess.run(["uptime"], capture_output=True, text=True, timeout=5)
+                uptime_info = up.stdout.strip() if up.stdout else "unknown"
+
+                results.append(f"## System Info\nDisk: {disk_line}\nBattery: {batt_info}\nUptime: {uptime_info}")
+            except Exception as e:
+                results.append(f"## System Info\n⚠️ Error: {e}")
+
+        # ── Deployment status this task ──
+        deployed = len(self._deployment_log)
+        remaining = MAX_DEPLOYMENTS_PER_TASK - deployed
+        if self._deployment_log:
+            dep_summary = "\n".join(
+                f"  {'✅' if d['success'] else '❌'} {d['agent']}: {d['task'][:80]}"
+                for d in self._deployment_log
+            )
+            results.append(f"## Deployment Status ({deployed}/{MAX_DEPLOYMENTS_PER_TASK} used, {remaining} remaining)\n{dep_summary}")
+        else:
+            results.append(f"## Deployment Status\nNo agents deployed yet. Budget: {MAX_DEPLOYMENTS_PER_TASK}")
+
+        full_scan = "\n\n".join(results)
+        self.logger.info(f"🔍 Environment scan: {len(results)} checks completed")
+        event_bus.emit("environment_scan", {"checks": len(results)})
+
+        return {"success": True, "content": full_scan}
+
+    def _verify_result(self, verify_type, check, expected=""):
+        """
+        Phase 3: Verification Loop
+        Verify that an agent's work actually succeeded.
+        """
+        self.logger.info(f"🔎 Verifying ({verify_type}): {check[:100]}")
+        event_bus.emit("verification", {"type": verify_type, "check": check[:100]})
+
+        try:
+            if verify_type == "browser":
+                # Check current browser page URL and content
+                from hands.browser import act_read_url, act_read_page
+                url_result = act_read_url()
+                url = url_result if isinstance(url_result, str) else url_result.get("content", str(url_result))
+
+                page_result = act_read_page()
+                page_text = page_result if isinstance(page_result, str) else page_result.get("content", str(page_result))
+                page_preview = page_text[:3000] if page_text else "(empty page)"
+
+                # Check if expected content is found
+                combined = f"{url}\n{page_preview}".lower()
+                if expected and expected.lower() in combined:
+                    verdict = f"✅ VERIFIED — Found '{expected}' in page"
+                elif expected:
+                    verdict = f"⚠️ NOT VERIFIED — '{expected}' not found in page"
+                else:
+                    verdict = "ℹ️ Page state retrieved — review below"
+
+                return {
+                    "success": bool(expected and expected.lower() in combined),
+                    "content": f"{verdict}\n\nURL: {url}\n\nPage Preview:\n{page_preview[:2000]}"
+                }
+
+            elif verify_type == "command":
+                # Run a shell command to verify
+                result = run_terminal(check, timeout=30)
+                output = result.get("content", str(result))
+
+                if expected and expected.lower() in output.lower():
+                    verdict = f"✅ VERIFIED — Found '{expected}' in output"
+                    success = True
+                elif expected:
+                    verdict = f"⚠️ NOT VERIFIED — '{expected}' not found in output"
+                    success = False
+                else:
+                    verdict = "ℹ️ Command output retrieved — review below"
+                    success = result.get("success", True)
+
+                return {
+                    "success": success,
+                    "content": f"{verdict}\n\nCommand: {check}\nOutput:\n{output[:2000]}"
+                }
+
+            elif verify_type == "file":
+                # Check if file/directory exists and get info
+                path = os.path.expanduser(check)
+                exists = os.path.exists(path)
+                if exists:
+                    is_dir = os.path.isdir(path)
+                    size = os.path.getsize(path) if not is_dir else sum(
+                        os.path.getsize(os.path.join(dp, f))
+                        for dp, dn, fnames in os.walk(path) for f in fnames
+                    )
+                    mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+
+                    if not is_dir:
+                        try:
+                            with open(path, 'r') as f:
+                                preview = f.read(1000)
+                        except:
+                            preview = "(binary file)"
+                    else:
+                        items = os.listdir(path)[:20]
+                        preview = "\n".join(items)
+
+                    return {
+                        "success": True,
+                        "content": f"✅ VERIFIED — {'Directory' if is_dir else 'File'} exists\nPath: {path}\nSize: {size:,} bytes\nModified: {mtime}\n\nPreview:\n{preview}"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "content": f"❌ NOT VERIFIED — Path does not exist: {path}"
+                    }
+
+            elif verify_type == "process":
+                # Check if a process is running
+                result = subprocess.run(
+                    ["pgrep", "-fl", check],
+                    capture_output=True, text=True, timeout=5
+                )
+                processes = result.stdout.strip()
+                if processes:
+                    return {
+                        "success": True,
+                        "content": f"✅ VERIFIED — Process '{check}' is running:\n{processes}"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "content": f"❌ NOT VERIFIED — Process '{check}' is NOT running"
+                    }
+
+            else:
+                return {"success": False, "content": f"Unknown verification type: {verify_type}"}
+
+        except Exception as e:
+            return {"success": False, "content": f"Verification error: {e}"}
+
+    def _checkpoint(self, completed, remaining):
+        """
+        Phase 8: Checkpoint
+        Save current progress so the brain can resume if interrupted.
+        """
+        checkpoint_data = {
+            "timestamp": datetime.now().isoformat(),
+            "completed": completed,
+            "remaining": remaining,
+            "deployments": len(self._deployment_log),
+            "deployment_log": self._deployment_log,
+        }
+
+        # Save to memory
+        self.memory.save("context", "last_checkpoint", json.dumps(checkpoint_data, indent=2))
+
+        # Also save to a checkpoint file
+        checkpoint_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory", "checkpoint.json")
+        try:
+            with open(checkpoint_path, "w") as f:
+                json.dump(checkpoint_data, f, indent=2)
+        except Exception:
+            pass
+
+        self.logger.info(f"💾 Checkpoint saved: completed={completed[:100]}, remaining={remaining[:100]}")
+        event_bus.emit("checkpoint", {"completed": completed[:200], "remaining": remaining[:200]})
+
+        return {
+            "success": True,
+            "content": f"💾 Checkpoint saved.\nCompleted: {completed}\nRemaining: {remaining}\nDeployments used: {len(self._deployment_log)}/{MAX_DEPLOYMENTS_PER_TASK}"
+        }
 
     def _deploy_agent(self, agent_type, task):
         """
@@ -255,6 +544,14 @@ class ToolExecutor:
             escalation_history=[],
         )
 
+        # ── Run post-task review for failures and high-step tasks ──
+        try:
+            review = self.self_improve.run_post_task_review(agent_type, task, result)
+            if review:
+                self.logger.info(f"📝 Post-task review: {review[:150]}")
+        except Exception as e:
+            self.logger.debug(f"Post-task review skipped: {e}")
+
         # ── Handoff context on success ──
         if result.get("success"):
             self.comms.send(
@@ -273,24 +570,53 @@ class ToolExecutor:
         })
         self.monitor.on_completed(agent_type, result.get("success", False), result.get("steps", 0))
 
-        # ── If failed, enrich the result so brain sees everything ──
+        # ── If failed, enrich with structured recovery guidance ──
         if not result.get("success"):
             stuck_reason = result.get("stuck_reason", result.get("content", "Unknown"))
             self.logger.warning(f"⚠️ {agent_type} agent stuck: {stuck_reason[:200]}")
 
-            # Build rich failure response for the brain
+            # Build rich failure response with recovery ladder
             all_failures = self._get_failure_summary()
             remaining = MAX_DEPLOYMENTS_PER_TASK - len(self._deployment_log)
+            attempt_num = len([d for d in self._deployment_log if d["agent"] == agent_type])
+
+            # Structured recovery ladder — escalates with each failure
+            if attempt_num <= 1:
+                recovery_level = "LEVEL 1 — SAME AGENT, BETTER INSTRUCTIONS"
+                recovery_advice = (
+                    "Analyze WHY the agent failed. The most likely cause: instructions were incomplete or ambiguous. "
+                    "Redeploy the SAME agent with MORE SPECIFIC instructions — include exact CSS selectors, "
+                    "exact text to look for, explicit wait times, and clearer success criteria."
+                )
+            elif attempt_num == 2:
+                recovery_level = "LEVEL 2 — SAME AGENT, DIFFERENT APPROACH"
+                recovery_advice = (
+                    "The same approach failed twice. Try a COMPLETELY DIFFERENT strategy: "
+                    "different URL, different navigation path, different form-filling order, "
+                    "or break the task into smaller micro-steps (do ONLY step 1, verify, then step 2)."
+                )
+            elif attempt_num == 3:
+                recovery_level = "LEVEL 3 — DIFFERENT AGENT"
+                recovery_advice = (
+                    "Three failures with the same agent type. Consider: "
+                    "(1) Use research_agent to find an alternative approach first, "
+                    "(2) Use coder_agent for a scripted approach instead of browser automation, "
+                    "(3) Use system_agent if this can be done via native macOS apps."
+                )
+            else:
+                recovery_level = "LEVEL 4+ — ASK ABDULLAH"
+                recovery_advice = (
+                    "Multiple failures across approaches. Ask Abdullah for help via send_imessage "
+                    "with a SPECIFIC question: what exactly is failing, what you've tried, "
+                    "and what information you need to proceed."
+                )
 
             result["content"] = (
                 f"❌ {agent_type} agent FAILED after {result.get('steps', 0)} steps.\n"
                 f"Reason: {stuck_reason[:400]}\n\n"
+                f"## Recovery: {recovery_level}\n{recovery_advice}\n\n"
                 f"{all_failures}\n\n"
-                f"You have {remaining} agent deployments remaining this task. "
-                f"THINK about WHY this failed before deploying again. "
-                f"Consider: (1) deploy same agent with DIFFERENT, MORE SPECIFIC instructions, "
-                f"(2) break the task into smaller steps and deploy for just the FIRST step, "
-                f"(3) ask Abdullah for help via send_imessage."
+                f"Budget: {remaining} deployments remaining."
             )
 
         return result

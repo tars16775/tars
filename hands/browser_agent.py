@@ -26,6 +26,7 @@ from hands.browser import (
     act_refresh, act_wait, act_wait_for_text, act_run_js,
     act_screenshot, act_handle_dialog, _detect_challenge,
     _activate_chrome, web_search,
+    act_press_and_hold, act_solve_captcha,
 )
 
 
@@ -130,6 +131,16 @@ BROWSER_TOOLS = [
         "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}
     },
     {
+        "name": "hold",
+        "description": "Press and hold an element for N seconds. For CAPTCHA 'press and hold' buttons. Use target='captcha' to auto-detect the CAPTCHA button position.",
+        "input_schema": {"type": "object", "properties": {"target": {"type": "string", "description": "Element text, CSS selector, or 'captcha' for auto-detect", "default": "captcha"}, "duration": {"type": "integer", "description": "Seconds to hold (default 10)", "default": 10}}, "required": ["target"]}
+    },
+    {
+        "name": "solve_captcha",
+        "description": "Auto-detect and solve CAPTCHA on the current page. Handles 'press and hold' CAPTCHAs automatically. Call this when you see 'Press and hold' or 'prove you're human' text.",
+        "input_schema": {"type": "object", "properties": {}}
+    },
+    {
         "name": "done",
         "description": "Task is complete. Provide a summary of what was accomplished.",
         "input_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
@@ -186,6 +197,12 @@ Step 6: type(selector="#floatingLabelInput13", text="MyPassword123!")
 Step 7: click(target="Next")
 ...and so on, ONE tool per step.
 
+## CAPTCHA Handling
+If the page says "Press and hold the button" or "prove you're human":
+- Call `solve_captcha()` — it auto-detects the CAPTCHA type and solves it.
+- After solving, call `wait(seconds=3)` then `look` to see the new page.
+- If it says "Loading..." after solving, wait a few more seconds.
+
 ## RULES
 1. ONE tool call per response. No exceptions.
 2. ONLY use selectors from `look`. Never guess.
@@ -196,6 +213,7 @@ Step 7: click(target="Next")
 7. NEVER call `done` unless the page clearly shows success (welcome, inbox, confirmation).
 8. If stuck after 3+ retries on the same step, call `stuck` honestly.
 9. `js` is READ-ONLY. Never use it to click or modify.
+10. If you see a CAPTCHA / "prove you're human", call `solve_captcha()` immediately.
 """
 
 
@@ -253,6 +271,8 @@ class BrowserAgent:
             if name == "refresh":    return act_refresh()
             if name == "screenshot": return act_screenshot()
             if name == "js":         return act_run_js(inp["code"])
+            if name == "hold":       return act_press_and_hold(inp.get("target", "captcha"), inp.get("duration", 10))
+            if name == "solve_captcha": return act_solve_captcha()
             return f"Unknown tool: {name}"
         except Exception as e:
             return f"ERROR: {e}"
@@ -345,7 +365,7 @@ class BrowserAgent:
                         # Guard 3: verify by checking the current page
                         verify = act_inspect_page()
                         verify_lower = verify.lower()
-                        fail_signals = ["signup", "sign up", "create account", "create your", "enter your", "password", "username", "create a", "register", "get started", "floatinglabel"]
+                        fail_signals = ["signup", "sign up", "create account", "create your", "enter your", "password", "username", "create a", "register", "get started", "floatinglabel", "prove you're human", "press and hold", "captcha"]
                         success_signals = ["welcome", "inbox", "dashboard", "account created", "you're all set", "verify your email", "confirmation", "successfully"]
                         has_fail = any(s in verify_lower for s in fail_signals)
                         has_success = any(s in verify_lower for s in success_signals)
