@@ -24,6 +24,17 @@ import webbrowser
 import logging
 import rumps
 
+# ── Default Environment Setup Config ──
+# What happens when TARS starts — optimized for iMessage workflow
+DEFAULT_SETUP = {
+    "ensure_running": ["Messages", "Google Chrome", "Mail"],
+    "close_distracting": ["Music", "Spotify", "TV", "News", "Podcasts", "Photos", "FaceTime", "Photo Booth"],
+    "volume": 30,
+    "do_not_disturb": True,
+    "dark_mode": True,
+    "notify_ready": True,
+}
+
 LOG_FILE = os.path.expanduser("~/Library/Logs/TARSControl.log")
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
@@ -117,18 +128,32 @@ class TARSControlApp(rumps.App):
         self.auto_connect_item = rumps.MenuItem("🔄 Auto-Connect on Launch")
         self.auto_connect_item.state = self.config.get("app", {}).get("auto_connect", False)
 
+        self.auto_setup_item = rumps.MenuItem("🧹 Auto-Setup on Start", callback=self.toggle_auto_setup)
+        self.auto_setup_item.state = self.config.get("app", {}).get("auto_setup", True)
+
+        self.prepare_item = rumps.MenuItem("🛠 Prepare Mac Now", callback=self.prepare_mac_now)
+        self.env_status_item = rumps.MenuItem("📊 Environment: unknown", callback=self.show_environment)
+
+        # Load setup config (user can override in config.yaml under 'app.setup')
+        app_cfg = self.config.get("app", {})
+        self._setup = {**DEFAULT_SETUP, **app_cfg.get("setup", {})}
+        self._last_setup_report = ""
+
         self.menu = [
             self.status_item,
+            self.env_status_item,
             None,  # separator
             self.tunnel_item,
             self.tars_item,
             self.kill_item,
             None,
+            self.prepare_item,
             self.dashboard_item,
             self.health_item,
             self.logs_item,
             None,
             self.auto_connect_item,
+            self.auto_setup_item,
             rumps.MenuItem("⚙ Settings", callback=self.open_settings),
             rumps.MenuItem("📁 Open TARS Folder", callback=self.open_folder),
             rumps.MenuItem("📄 View App Logs", callback=self.view_app_logs),
@@ -143,6 +168,9 @@ class TARSControlApp(rumps.App):
         if self._env_ok and self.auto_connect_item.state:
             log.info("Auto-connect enabled, starting tunnel...")
             threading.Timer(1.0, lambda: self._start_tunnel()).start()
+
+        # Initial environment check (non-blocking)
+        threading.Timer(2.0, self._update_env_status).start()
 
     # ─── Environment Validation ────────────────────────
 
@@ -172,6 +200,222 @@ class TARSControlApp(rumps.App):
 
         log.info("Environment validated OK")
         return True
+
+    # ─── Environment Auto-Setup ─────────────────────────
+
+    def toggle_auto_setup(self, sender):
+        """Toggle auto-setup on TARS start."""
+        sender.state = not sender.state
+        log.info("Auto-setup on start: %s", "ON" if sender.state else "OFF")
+
+    def prepare_mac_now(self, sender):
+        """Manually prepare the Mac environment."""
+        threading.Thread(target=self._setup_environment, args=(True,), daemon=True).start()
+
+    def show_environment(self, sender):
+        """Show current environment status."""
+        threading.Thread(target=self._show_env_detail, daemon=True).start()
+
+    def _show_env_detail(self):
+        """Gather and display environment info."""
+        try:
+            info = []
+            # Running apps
+            r = subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to get name of every process whose background only is false'],
+                capture_output=True, text=True, timeout=10
+            )
+            apps = [a.strip() for a in r.stdout.strip().split(",")] if r.returncode == 0 else []
+            info.append(f"Running Apps ({len(apps)}):")
+            for a in sorted(apps):
+                marker = "✅" if a in self._setup.get("ensure_running", []) else "  "
+                info.append(f"  {marker} {a}")
+
+            # Volume
+            r = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"],
+                             capture_output=True, text=True, timeout=5)
+            vol = r.stdout.strip() if r.returncode == 0 else "?"
+            info.append(f"\nVolume: {vol}%")
+
+            # Dark mode
+            r = subprocess.run(["osascript", "-e",
+                              'tell application "System Events" to tell appearance preferences to get dark mode'],
+                             capture_output=True, text=True, timeout=5)
+            dm = r.stdout.strip() if r.returncode == 0 else "?"
+            info.append(f"Dark Mode: {dm}")
+
+            # Battery
+            r = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5)
+            batt = r.stdout.strip().split("\n")[-1].strip() if r.returncode == 0 else "?"
+            info.append(f"Battery: {batt}")
+
+            # Messages running?
+            msgs_running = "Messages" in apps
+            info.append(f"\niMessage Ready: {'✅ Yes' if msgs_running else '❌ No — Messages not running'}")
+
+            # Chrome running?
+            chrome_running = "Google Chrome" in apps
+            info.append(f"Chrome Ready: {'✅ Yes' if chrome_running else '❌ No'}")
+
+            if self._last_setup_report:
+                info.append(f"\nLast Setup:\n{self._last_setup_report}")
+
+            rumps.alert("TARS — Mac Environment", "\n".join(info))
+        except Exception as e:
+            rumps.alert("Environment Check Error", str(e))
+
+    def _update_env_status(self):
+        """Quick env status update for the menu item."""
+        try:
+            r = subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to get name of every process whose background only is false'],
+                capture_output=True, text=True, timeout=10
+            )
+            apps = [a.strip() for a in r.stdout.strip().split(",")] if r.returncode == 0 else []
+            needed = self._setup.get("ensure_running", [])
+            ready = all(app in apps for app in needed)
+            msgs = "Messages" in apps
+            if ready and msgs:
+                self.env_status_item.title = f"📊 Environment: ✅ Ready ({len(apps)} apps)"
+            elif msgs:
+                missing = [a for a in needed if a not in apps]
+                self.env_status_item.title = f"📊 Environment: ⚠️ Missing {', '.join(missing)}"
+            else:
+                self.env_status_item.title = "📊 Environment: ❌ Messages not running"
+        except Exception:
+            self.env_status_item.title = "📊 Environment: ?"
+
+    def _setup_environment(self, manual=False):
+        """
+        Prepare the Mac for TARS operation.
+        Called automatically when TARS starts (if auto_setup enabled),
+        or manually via the menu item.
+
+        Steps:
+          1. Ensure critical apps are running (Messages, Chrome, Mail)
+          2. Close distracting apps (Music, Spotify, etc.)
+          3. Set volume to a low level (don't blast notifications)
+          4. Enable dark mode (TARS aesthetic)
+          5. Send a notification when ready
+        """
+        log.info("Setting up environment (manual=%s)...", manual)
+        actions = []
+        setup = self._setup
+
+        # ── Step 1: Ensure critical apps are running ──
+        ensure = setup.get("ensure_running", [])
+        if ensure:
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e",
+                     'tell application "System Events" to get name of every process whose background only is false'],
+                    capture_output=True, text=True, timeout=10
+                )
+                running = [a.strip() for a in r.stdout.strip().split(",")] if r.returncode == 0 else []
+            except Exception:
+                running = []
+
+            for app in ensure:
+                if app not in running:
+                    try:
+                        subprocess.run(
+                            ["osascript", "-e", f'tell application "{app}" to activate'],
+                            capture_output=True, timeout=10
+                        )
+                        actions.append(f"✅ Opened {app}")
+                        log.info("Opened %s", app)
+                        time.sleep(1)  # Give app time to launch
+                    except Exception as e:
+                        actions.append(f"❌ Failed to open {app}: {e}")
+                        log.error("Failed to open %s: %s", app, e)
+                else:
+                    actions.append(f"✅ {app} already running")
+
+        # ── Step 2: Close distracting apps ──
+        close_apps = setup.get("close_distracting", [])
+        if close_apps:
+            for app in close_apps:
+                try:
+                    r = subprocess.run(
+                        ["osascript", "-e",
+                         f'tell application "System Events" to (name of every process) contains "{app}"'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0 and r.stdout.strip().lower() == "true":
+                        subprocess.run(
+                            ["osascript", "-e", f'tell application "{app}" to quit'],
+                            capture_output=True, timeout=10
+                        )
+                        actions.append(f"🚫 Closed {app}")
+                        log.info("Closed distracting app: %s", app)
+                except Exception:
+                    pass  # App wasn't running, that's fine
+
+        # ── Step 3: Set volume ──
+        target_vol = setup.get("volume")
+        if target_vol is not None:
+            try:
+                subprocess.run(
+                    ["osascript", "-e", f"set volume output volume {target_vol}"],
+                    capture_output=True, timeout=5
+                )
+                actions.append(f"🔊 Volume → {target_vol}%")
+            except Exception as e:
+                actions.append(f"❌ Volume: {e}")
+
+        # ── Step 4: Dark mode ──
+        if setup.get("dark_mode") is not None:
+            try:
+                val = "true" if setup["dark_mode"] else "false"
+                subprocess.run(
+                    ["osascript", "-e",
+                     f'tell application "System Events" to tell appearance preferences to set dark mode to {val}'],
+                    capture_output=True, timeout=5
+                )
+                actions.append(f"🌙 Dark mode → {'on' if setup['dark_mode'] else 'off'}")
+            except Exception:
+                pass
+
+        # ── Step 5: Focus — hide non-essential windows ──
+        try:
+            subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to set visible of every process whose name is not "Finder" and name is not "Messages" and name is not "Google Chrome" to false'],
+                capture_output=True, timeout=10
+            )
+            actions.append("👁 Hidden non-essential windows")
+        except Exception:
+            pass
+
+        # ── Step 6: Bring Messages to front ──
+        try:
+            subprocess.run(
+                ["osascript", "-e", 'tell application "Messages" to activate'],
+                capture_output=True, timeout=5
+            )
+            actions.append("💬 Messages → front")
+        except Exception:
+            pass
+
+        # ── Report ──
+        report = "\n".join(actions) if actions else "No changes needed"
+        self._last_setup_report = report
+        log.info("Environment setup complete: %s", report.replace("\n", " | "))
+
+        # Update env status
+        self._update_env_status()
+
+        # Notify
+        if setup.get("notify_ready", True):
+            rumps.notification(
+                "TARS Control",
+                "✅ Mac Ready for TARS" if manual else "✅ Environment Prepared",
+                f"{len([a for a in actions if a.startswith('✅')])} apps ready, volume {setup.get('volume', '?')}%"
+            )
+
+        return actions
 
     # ─── Tunnel Control ────────────────────────────────
 
@@ -277,11 +521,32 @@ class TARSControlApp(rumps.App):
             self.kill_item.set_callback(None)
             rumps.notification("TARS Control", "TARS Stopping", "Sending stop command...")
         else:
-            self._send_command("start_tars")
-            self.tars_item.title = "⏹ Stop TARS"
-            self.kill_item.set_callback(self.kill_switch)
-            self._update_status("tars_running")
-            rumps.notification("TARS Control", "TARS Starting", "Launching TARS automation...")
+            # ── Auto-setup before starting TARS ──
+            if self.auto_setup_item.state:
+                rumps.notification("TARS Control", "Preparing Mac...", "Setting up environment for TARS")
+                threading.Thread(
+                    target=self._start_tars_with_setup,
+                    daemon=True
+                ).start()
+            else:
+                self._send_start_tars()
+
+    def _start_tars_with_setup(self):
+        """Run environment setup, then start TARS."""
+        try:
+            self._setup_environment(manual=False)
+            time.sleep(1)  # Brief pause after setup
+        except Exception as e:
+            log.error("Setup error (continuing anyway): %s", e)
+        self._send_start_tars()
+
+    def _send_start_tars(self):
+        """Send the start command to TARS."""
+        self._send_command("start_tars")
+        self.tars_item.title = "⏹ Stop TARS"
+        self.kill_item.set_callback(self.kill_switch)
+        self._update_status("tars_running")
+        rumps.notification("TARS Control", "TARS Starting", "Launching TARS automation...")
 
     def kill_switch(self, sender):
         """Emergency kill switch."""
