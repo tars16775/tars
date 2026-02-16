@@ -1987,11 +1987,38 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
 
 
 def _html_cheapest_dates_email(origin_code, dest_code, date_results, start_date, end_date):
-    """Generate a beautiful HTML email for cheapest dates comparison."""
+    """Generate a premium HTML email for cheapest dates with analytics, bar chart, and insights."""
     if not date_results:
         return "<p>No results found.</p>"
     cheapest = date_results[0]
 
+    # Compute analytics
+    valid_prices = [dr["price_num"] for dr in date_results if dr.get("price_num", 99999) < 99999]
+    price_min = min(valid_prices) if valid_prices else 0
+    price_avg = round(sum(valid_prices) / len(valid_prices)) if valid_prices else 0
+    price_max = max(valid_prices) if valid_prices else 0
+    airline_set = set(dr.get("airline", "—") for dr in date_results if dr.get("airline", "—") != "—")
+
+    # Build inline bar chart (CSS bars)
+    bar_max = price_max if price_max > 0 else 1
+    bar_rows = ""
+    sorted_by_date = sorted([dr for dr in date_results if dr.get("price_num", 99999) < 99999],
+                            key=lambda x: x["date"])[:20]
+    for dr in sorted_by_date:
+        pct = min(round((dr["price_num"] / bar_max) * 100), 100)
+        bar_color = "#059669" if dr["price_num"] == price_min else "#2563EB" if dr["price_num"] <= price_avg else "#F59E0B" if dr["price_num"] <= price_max * 0.8 else "#DC2626"
+        bar_rows += f"""
+        <tr>
+          <td style="padding:4px 8px;font-size:11px;color:#64748B;white-space:nowrap;width:80px;">{dr['date'][-5:]}</td>
+          <td style="padding:4px 8px;width:100%;">
+            <div style="background:#F1F5F9;border-radius:4px;height:18px;position:relative;">
+              <div style="background:{bar_color};height:18px;border-radius:4px;width:{pct}%;min-width:2px;"></div>
+            </div>
+          </td>
+          <td style="padding:4px 8px;font-size:11px;font-weight:600;color:#0F172A;white-space:nowrap;">{dr['price']}</td>
+        </tr>"""
+
+    # Build date table rows
     date_rows = ""
     for i, dr in enumerate(date_results, 1):
         bg = "#FFFFFF" if i % 2 == 1 else "#F8FAFC"
@@ -2004,21 +2031,44 @@ def _html_cheapest_dates_email(origin_code, dest_code, date_results, start_date,
         elif i == 3:
             badge = '<span style="background:#F97316;color:#fff;font-size:9px;padding:2px 6px;border-radius:10px;margin-left:4px;">3rd</span>'
         link = dr.get("booking_link", "#")
+        savings_badge = ""
+        if i > 1 and dr.get("price_num", 99999) < 99999 and cheapest.get("price_num", 99999) < 99999:
+            diff = dr["price_num"] - cheapest["price_num"]
+            if diff > 0:
+                savings_badge = f'<div style="color:#DC2626;font-size:10px;">+${diff} vs best</div>'
         date_rows += f"""
         <tr style="background:{bg};">
           <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;">
             <div style="font-weight:600;color:#0F172A;">{dr['date']}</div>
             <div style="color:#94A3B8;font-size:11px;">{dr['day']}</div>
           </td>
-          <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;font-weight:700;color:{price_color};font-size:15px;">{dr['price']}{badge}</td>
           <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;">
-            <div style="color:#1E293B;">{dr['airline']}</div>
+            <div style="font-weight:700;color:{price_color};font-size:15px;">{dr['price']}{badge}</div>
+            {savings_badge}
+          </td>
+          <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;">
+            <div style="color:#1E293B;font-weight:500;">{dr['airline']}</div>
             <div style="color:#94A3B8;font-size:11px;">{dr['stops']} · {dr['duration']}</div>
           </td>
           <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;text-align:center;">
-            <a href="{link}" style="display:inline-block;background:#EFF6FF;color:#2563EB;text-decoration:none;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:500;">Book →</a>
+            <a href="{link}" style="display:inline-block;background:#2563EB;color:#FFFFFF;text-decoration:none;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;">Book →</a>
           </td>
         </tr>"""
+
+    # Insight tips
+    insights_html = ""
+    if len(valid_prices) >= 3:
+        price_spread = price_max - price_min
+        insights_html += f"""
+        <div style="margin:24px;">
+          <h2 style="font-size:16px;color:#0F172A;margin:0 0 12px;font-weight:600;">💡 Smart Insights</h2>
+          <div style="padding:16px;background:#F0F9FF;border-radius:12px;border:1px solid #BAE6FD;">
+            <div style="font-size:13px;color:#0369A1;margin-bottom:8px;">📊 Price range: <strong>${price_min} – ${price_max}</strong> (${price_spread} spread)</div>
+            <div style="font-size:13px;color:#0369A1;margin-bottom:8px;">📈 Average price: <strong>${price_avg}</strong> across {len(valid_prices)} dates</div>
+            <div style="font-size:13px;color:#0369A1;margin-bottom:8px;">✈️ <strong>{len(airline_set)}</strong> airlines compete on this route</div>
+            {"<div style='font-size:13px;color:#059669;'><strong>💰 Flying on " + cheapest.get('day', '') + " saves up to $" + str(price_max - price_min) + " vs the most expensive date!</strong></div>" if price_spread > 50 else ""}
+          </div>
+        </div>"""
 
     return f"""<!DOCTYPE html>
 <html>
@@ -2029,30 +2079,48 @@ def _html_cheapest_dates_email(origin_code, dest_code, date_results, start_date,
       <div style="font-size:32px;margin-bottom:8px;">📊</div>
       <h1 style="color:#FFFFFF;font-size:22px;font-weight:700;margin:0;">Cheapest Dates Report</h1>
       <p style="color:#94A3B8;font-size:14px;margin:8px 0 0;">{origin_code} → {dest_code} · {start_date} – {end_date}</p>
+      <p style="color:#475569;font-size:11px;margin:4px 0 0;">TARS Flight Intelligence v6.0</p>
     </div>
     <div style="margin:24px;padding:24px;background:linear-gradient(135deg,#F0FDF4 0%,#DCFCE7 100%);border-radius:12px;border:1px solid #BBF7D0;text-align:center;">
       <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#065F46;font-weight:600;">🏆 Best Price Found</div>
       <div style="font-size:36px;font-weight:800;color:#059669;margin:8px 0;">{cheapest['price']}</div>
       <div style="color:#065F46;font-size:14px;">{cheapest['date']} ({cheapest['day']}) · {cheapest['airline']} · {cheapest['stops']}</div>
-      <a href="{cheapest.get('booking_link', '#')}" style="display:inline-block;background:#059669;color:#FFFFFF;text-decoration:none;padding:10px 24px;border-radius:8px;font-weight:600;font-size:13px;margin-top:12px;">Book This Flight →</a>
+      <a href="{cheapest.get('booking_link', '#')}" style="display:inline-block;background:#059669;color:#FFFFFF;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:14px;margin-top:12px;">Book This Flight →</a>
     </div>
     <div style="margin:0 24px;">
       <table width="100%" cellpadding="0" cellspacing="0">
         <tr>
-          <td style="background:#F8FAFC;border-radius:8px;padding:12px;text-align:center;width:50%;">
-            <div style="font-size:18px;font-weight:700;color:#2563EB;">{len(date_results)}</div>
-            <div style="color:#64748B;font-size:11px;">Dates Scanned</div>
+          <td style="background:#F8FAFC;border-radius:8px;padding:14px;text-align:center;width:25%;">
+            <div style="font-size:20px;font-weight:700;color:#059669;">${price_min}</div>
+            <div style="color:#64748B;font-size:10px;text-transform:uppercase;">Cheapest</div>
           </td>
-          <td style="width:8px;"></td>
-          <td style="background:#F8FAFC;border-radius:8px;padding:12px;text-align:center;width:50%;">
-            <div style="font-size:18px;font-weight:700;color:#2563EB;">{len([d for d in date_results if d.get('price_num', 99999) < 99999])}</div>
-            <div style="color:#64748B;font-size:11px;">With Flights</div>
+          <td style="width:6px;"></td>
+          <td style="background:#F8FAFC;border-radius:8px;padding:14px;text-align:center;width:25%;">
+            <div style="font-size:20px;font-weight:700;color:#2563EB;">${price_avg}</div>
+            <div style="color:#64748B;font-size:10px;text-transform:uppercase;">Average</div>
+          </td>
+          <td style="width:6px;"></td>
+          <td style="background:#F8FAFC;border-radius:8px;padding:14px;text-align:center;width:25%;">
+            <div style="font-size:20px;font-weight:700;color:#DC2626;">${price_max}</div>
+            <div style="color:#64748B;font-size:10px;text-transform:uppercase;">Highest</div>
+          </td>
+          <td style="width:6px;"></td>
+          <td style="background:#F8FAFC;border-radius:8px;padding:14px;text-align:center;width:25%;">
+            <div style="font-size:20px;font-weight:700;color:#7C3AED;">{len(date_results)}</div>
+            <div style="color:#64748B;font-size:10px;text-transform:uppercase;">Dates</div>
           </td>
         </tr>
       </table>
     </div>
     <div style="margin:24px;">
-      <h2 style="font-size:16px;color:#0F172A;margin:0 0 12px;font-weight:600;">All Dates (sorted by price)</h2>
+      <h2 style="font-size:16px;color:#0F172A;margin:0 0 12px;font-weight:600;">📈 Price by Date</h2>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        {bar_rows}
+      </table>
+    </div>
+    {insights_html}
+    <div style="margin:24px;">
+      <h2 style="font-size:16px;color:#0F172A;margin:0 0 12px;font-weight:600;">📋 All Dates (sorted by price)</h2>
       <table width="100%" cellpadding="0" cellspacing="0" style="border-radius:8px;overflow:hidden;border:1px solid #E2E8F0;">
         <tr style="background:#0F172A;">
           <th style="padding:10px 14px;text-align:left;color:#FFFFFF;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Date</th>
@@ -2064,8 +2132,8 @@ def _html_cheapest_dates_email(origin_code, dest_code, date_results, start_date,
       </table>
     </div>
     <div style="background:#F8FAFC;padding:20px 24px;text-align:center;border-top:1px solid #E2E8F0;">
-      <p style="color:#94A3B8;font-size:12px;margin:0;">Powered by TARS · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
-      <p style="color:#CBD5E1;font-size:11px;margin:4px 0 0;">Prices may change. Book early for best rates.</p>
+      <p style="color:#94A3B8;font-size:12px;margin:0;">Powered by TARS v6.0 · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+      <p style="color:#CBD5E1;font-size:11px;margin:4px 0 0;">Prices may change. Book early for best rates. Excel dashboard attached.</p>
     </div>
   </div>
 </body>
@@ -2735,53 +2803,213 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
 
 
 def _generate_dates_excel(origin_code, dest_code, date_results, start, end):
-    """Generate an enhanced Excel report for cheapest dates with booking links."""
+    """Generate a premium Excel dashboard for cheapest dates with charts, data bars, and conditional formatting."""
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
+        from openpyxl.chart import BarChart, LineChart, Reference
+        from openpyxl.chart.series import DataPoint
+        from openpyxl.chart.label import DataLabelList
+        from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, DataBarRule
     except ImportError:
         return {"success": False, "content": "openpyxl not installed"}
 
     REPORT_DIR = os.path.expanduser("~/Documents/TARS_Reports")
     os.makedirs(REPORT_DIR, exist_ok=True)
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Cheapest Dates"
 
+    # ── Color Palette ──
     DARK, GREEN, BLUE, GRAY = "0F172A", "059669", "2563EB", "64748B"
-    ALT_ROW, WHITE = "F1F5F9", "FFFFFF"
+    ALT_ROW, WHITE, RED = "F1F5F9", "FFFFFF", "DC2626"
+    GOLD, ORANGE, PURPLE = "F59E0B", "EA580C", "7C3AED"
     header_font = Font(name="Helvetica Neue", size=11, bold=True, color=WHITE)
     header_fill = PatternFill(start_color=DARK, end_color=DARK, fill_type="solid")
     data_font = Font(name="Helvetica Neue", size=10)
     link_font = Font(name="Helvetica Neue", size=10, color=BLUE, underline="single")
     gold_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
     alt_fill = PatternFill(start_color=ALT_ROW, end_color=ALT_ROW, fill_type="solid")
+    green_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
     thin_border = Border(
         left=Side(style="thin", color="E2E8F0"), right=Side(style="thin", color="E2E8F0"),
         top=Side(style="thin", color="E2E8F0"), bottom=Side(style="thin", color="E2E8F0"),
     )
 
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=9)
+    # Compute analytics from date_results
+    valid_prices = [dr["price_num"] for dr in date_results if dr.get("price_num", 99999) < 99999]
+    cheapest = date_results[0]
+    airline_counts = {}
+    for dr in date_results:
+        a = dr.get("airline", "—")
+        if a != "—":
+            if a not in airline_counts:
+                airline_counts[a] = {"count": 0, "min_price": 99999, "prices": []}
+            airline_counts[a]["count"] += 1
+            p = dr.get("price_num", 99999)
+            if p < 99999:
+                airline_counts[a]["prices"].append(p)
+                airline_counts[a]["min_price"] = min(airline_counts[a]["min_price"], p)
+    for a in airline_counts:
+        prices = airline_counts[a]["prices"]
+        airline_counts[a]["avg_price"] = round(sum(prices) / len(prices)) if prices else 0
+
+    # ═══════════════════════════════════════════════════
+    #  SHEET 1: Dashboard Overview
+    # ═══════════════════════════════════════════════════
+    ws_dash = wb.active
+    ws_dash.title = "Dashboard"
+    ws_dash.sheet_properties.tabColor = "059669"
+
+    # Title
+    ws_dash.merge_cells("A1:J1")
+    ws_dash.cell(row=1, column=1, value=f"📊 TARS Cheapest Dates Dashboard").font = Font(
+        name="Helvetica Neue", size=22, bold=True, color=DARK)
+    ws_dash.row_dimensions[1].height = 48
+    ws_dash.merge_cells("A2:J2")
+    ws_dash.cell(row=2, column=1, value=f"{origin_code} → {dest_code} · {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')} · Generated {datetime.now().strftime('%B %d, %Y at %I:%M %p')}").font = Font(
+        name="Helvetica Neue", size=10, italic=True, color=GRAY)
+    ws_dash.row_dimensions[2].height = 22
+
+    # KPI Cards Row
+    kpi_row = 4
+    price_min = min(valid_prices) if valid_prices else 0
+    price_avg = round(sum(valid_prices) / len(valid_prices)) if valid_prices else 0
+    price_max = max(valid_prices) if valid_prices else 0
+    kpi_items = [
+        ("💰 CHEAPEST", f"${price_min}", GREEN),
+        ("📊 AVERAGE", f"${price_avg}", BLUE),
+        ("📈 HIGHEST", f"${price_max}", RED),
+        ("📅 DATES", str(len(date_results)), DARK),
+        ("✈️ AIRLINES", str(len(airline_counts)), PURPLE),
+        ("✅ WITH FLIGHTS", str(len(valid_prices)), ORANGE),
+    ]
+
+    for ki, (kpi_label, kpi_val, kpi_color) in enumerate(kpi_items):
+        col = ki * 2 + 1
+        for r_off in range(3):
+            for c_off in range(2):
+                cell = ws_dash.cell(row=kpi_row + r_off, column=col + c_off)
+                cell.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+                cell.border = thin_border
+        ws_dash.merge_cells(start_row=kpi_row, start_column=col, end_row=kpi_row, end_column=col + 1)
+        ws_dash.cell(row=kpi_row, column=col, value=kpi_label).font = Font(
+            name="Helvetica Neue", size=9, bold=True, color=GRAY)
+        ws_dash.cell(row=kpi_row, column=col).alignment = Alignment(horizontal="center")
+        ws_dash.merge_cells(start_row=kpi_row + 1, start_column=col, end_row=kpi_row + 1, end_column=col + 1)
+        ws_dash.cell(row=kpi_row + 1, column=col, value=kpi_val).font = Font(
+            name="Helvetica Neue", size=20, bold=True, color=kpi_color)
+        ws_dash.cell(row=kpi_row + 1, column=col).alignment = Alignment(horizontal="center")
+
+    # ── Price Timeline Chart ──
+    chart_data_row = kpi_row + 5
+    ws_dash.cell(row=chart_data_row - 1, column=1, value="Price by Date:").font = Font(
+        name="Helvetica Neue", size=8, color=GRAY)
+    ws_dash.cell(row=chart_data_row, column=1, value="Date").font = Font(
+        name="Helvetica Neue", size=9, bold=True, color=GRAY)
+    ws_dash.cell(row=chart_data_row, column=2, value="Price ($)").font = Font(
+        name="Helvetica Neue", size=9, bold=True, color=GRAY)
+
+    # Sort by date for the timeline
+    sorted_by_date = sorted([dr for dr in date_results if dr.get("price_num", 99999) < 99999],
+                            key=lambda x: x["date"])
+    for ci, dr in enumerate(sorted_by_date[:30]):
+        ws_dash.cell(row=chart_data_row + 1 + ci, column=1, value=dr["date"]).font = data_font
+        ws_dash.cell(row=chart_data_row + 1 + ci, column=2, value=dr["price_num"]).font = data_font
+
+    if sorted_by_date:
+        line_chart = LineChart()
+        line_chart.style = 10
+        line_chart.title = "Price by Travel Date"
+        line_chart.y_axis.title = "Price ($)"
+        line_chart.x_axis.title = "Date"
+        line_chart.width = 24
+        line_chart.height = 14
+
+        data_ref = Reference(ws_dash, min_col=2, min_row=chart_data_row,
+                             max_row=chart_data_row + len(sorted_by_date[:30]))
+        cats_ref = Reference(ws_dash, min_col=1, min_row=chart_data_row + 1,
+                             max_row=chart_data_row + len(sorted_by_date[:30]))
+        line_chart.add_data(data_ref, titles_from_data=True)
+        line_chart.set_categories(cats_ref)
+        line_chart.series[0].graphicalProperties.line.solidFill = "2563EB"
+        line_chart.series[0].graphicalProperties.line.width = 25000
+
+        ws_dash.add_chart(line_chart, f"D{chart_data_row - 1}")
+
+    # ── Airline Price Comparison Bar Chart ──
+    if airline_counts:
+        airline_chart_row = chart_data_row + max(len(sorted_by_date[:30]), 16) + 3
+        ws_dash.cell(row=airline_chart_row - 1, column=1, value="Airline Comparison:").font = Font(
+            name="Helvetica Neue", size=8, color=GRAY)
+        ws_dash.cell(row=airline_chart_row, column=1, value="Airline").font = Font(
+            name="Helvetica Neue", size=9, bold=True, color=GRAY)
+        ws_dash.cell(row=airline_chart_row, column=2, value="Cheapest ($)").font = Font(
+            name="Helvetica Neue", size=9, bold=True, color=GRAY)
+
+        sorted_airlines = sorted(airline_counts.items(), key=lambda x: x[1]["min_price"])
+        for ai, (aname, adata) in enumerate(sorted_airlines[:8]):
+            ws_dash.cell(row=airline_chart_row + 1 + ai, column=1, value=aname[:15]).font = data_font
+            ws_dash.cell(row=airline_chart_row + 1 + ai, column=2, value=adata["min_price"]).font = data_font
+
+        bar_chart = BarChart()
+        bar_chart.type = "bar"
+        bar_chart.style = 10
+        bar_chart.title = "Cheapest Price by Airline"
+        bar_chart.x_axis.title = "Price ($)"
+        bar_chart.width = 24
+        bar_chart.height = 12
+
+        data_ref = Reference(ws_dash, min_col=2, min_row=airline_chart_row,
+                             max_row=airline_chart_row + len(sorted_airlines[:8]))
+        cats_ref = Reference(ws_dash, min_col=1, min_row=airline_chart_row + 1,
+                             max_row=airline_chart_row + len(sorted_airlines[:8]))
+        bar_chart.add_data(data_ref, titles_from_data=True)
+        bar_chart.set_categories(cats_ref)
+        bar_chart.series[0].graphicalProperties.solidFill = "2563EB"
+        pt = DataPoint(idx=0)
+        pt.graphicalProperties.solidFill = "059669"
+        bar_chart.series[0].data_points.append(pt)
+
+        ws_dash.add_chart(bar_chart, f"D{airline_chart_row - 1}")
+
+    # ── Best Date Box ──
+    best_row = kpi_row + 3
+    ws_dash.cell(row=best_row, column=1, value="🏆 Best Date:").font = Font(
+        name="Helvetica Neue", size=10, bold=True, color=GRAY)
+    ws_dash.cell(row=best_row, column=2, value=f"{cheapest['date']} ({cheapest['day']}) — {cheapest['price']} on {cheapest['airline']}").font = Font(
+        name="Helvetica Neue", size=10, bold=True, color=GREEN)
+
+    for col in range(1, 14):
+        ws_dash.column_dimensions[get_column_letter(col)].width = 12
+
+    # ═══════════════════════════════════════════════════
+    #  SHEET 2: All Dates (data table)
+    # ═══════════════════════════════════════════════════
+    ws = wb.create_sheet(title="All Dates")
+    ws.sheet_properties.tabColor = "2563EB"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
     ws.cell(row=1, column=1, value=f"📊 Cheapest Dates: {origin_code} → {dest_code}").font = Font(
         name="Helvetica Neue", size=18, bold=True, color=DARK)
     ws.row_dimensions[1].height = 40
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=9)
-    ws.cell(row=2, column=1, value=f"Range: {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')} · Generated by TARS · {datetime.now().strftime('%B %d, %Y')}").font = Font(
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
+    ws.cell(row=2, column=1, value=f"Range: {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')} · Generated by TARS v6.0 · {datetime.now().strftime('%B %d, %Y')}").font = Font(
         name="Helvetica Neue", size=9, italic=True, color=GRAY)
 
-    headers = ["Date", "Day", "Price", "Airline", "Departure", "Duration", "Stops", "Options", "Book"]
-    start_row = 4
+    headers = ["#", "Date", "Day", "Price ($)", "Airline", "Departure", "Duration", "Stops", "Options", "Book"]
+    data_start = 4
     for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=start_row, column=col_idx, value=h)
+        cell = ws.cell(row=data_start, column=col_idx, value=h)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = thin_border
+    ws.row_dimensions[data_start].height = 30
 
-    for row_idx, dr in enumerate(date_results, start_row + 1):
-        i = row_idx - start_row
-        values = [dr["date"], dr["day"], dr["price"], dr["airline"],
+    for row_idx, dr in enumerate(date_results, data_start + 1):
+        i = row_idx - data_start
+        price_val = dr.get("price_num", 99999) if dr.get("price_num", 99999) < 99999 else None
+        values = [i, dr["date"], dr["day"], price_val, dr["airline"],
                   dr["depart_time"], dr["duration"], dr["stops"], dr["options"], ""]
         for col_idx, val in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
@@ -2789,34 +3017,151 @@ def _generate_dates_excel(origin_code, dest_code, date_results, start, end):
             cell.border = thin_border
             cell.alignment = Alignment(vertical="center")
             if i == 1:
+                cell.fill = green_fill
+            elif i <= 3:
                 cell.fill = gold_fill
             elif i % 2 == 0:
                 cell.fill = alt_fill
-            if col_idx == 3:
-                cell.font = Font(name="Helvetica Neue", size=10, bold=True, color=GREEN if i <= 3 else DARK)
-        link_cell = ws.cell(row=row_idx, column=9, value="Book →")
+            if col_idx == 4:  # Price column
+                cell.number_format = '$#,##0'
+                if i == 1:
+                    cell.font = Font(name="Helvetica Neue", size=11, bold=True, color=GREEN)
+                elif i <= 3:
+                    cell.font = Font(name="Helvetica Neue", size=10, bold=True, color=GOLD)
+                else:
+                    cell.font = Font(name="Helvetica Neue", size=10, bold=True)
+        link_cell = ws.cell(row=row_idx, column=10, value="Book →")
         link_cell.hyperlink = dr.get("booking_link", "")
         link_cell.font = link_font
         link_cell.alignment = Alignment(horizontal="center", vertical="center")
         link_cell.border = thin_border
 
-    srow = start_row + len(date_results) + 2
-    ws.cell(row=srow, column=1, value="Summary").font = Font(name="Helvetica Neue", size=13, bold=True, color=DARK)
-    cheapest = date_results[0]
+    # ── Conditional Formatting: Price data bars ──
+    data_end_row = data_start + len(date_results)
+    price_range_str = f"D{data_start+1}:D{data_end_row}"
+    ws.conditional_formatting.add(price_range_str, DataBarRule(
+        start_type="min", end_type="max",
+        color="2563EB", showValue=True, minLength=None, maxLength=None,
+    ))
+
+    # ── Conditional Formatting: Price color scale ──
+    ws.conditional_formatting.add(price_range_str, ColorScaleRule(
+        start_type="min", start_color="DCFCE7",
+        mid_type="percentile", mid_value=50, mid_color="FEF3C7",
+        end_type="max", end_color="FEE2E2",
+    ))
+
+    # ── Conditional Formatting: Highlight cheapest row ──
+    ws.conditional_formatting.add(f"A{data_start+1}:J{data_start+1}", CellIsRule(
+        operator="notEqual", formula=['""'],
+        fill=green_fill,
+    ))
+
+    # Summary below data
+    srow = data_start + len(date_results) + 2
+    ws.cell(row=srow, column=1, value="📋 Summary").font = Font(name="Helvetica Neue", size=13, bold=True, color=DARK)
     summary = {
         "Route": f"{origin_code} → {dest_code}",
         "Dates Scanned": str(len(date_results)),
+        "With Flights": str(len(valid_prices)),
         "Cheapest Date": f"{cheapest['date']} ({cheapest['day']})",
         "Cheapest Price": f"{cheapest['price']} — {cheapest['airline']}",
-        "Source": "Google Flights",
+        "Average Price": f"${price_avg}" if price_avg else "N/A",
+        "Price Range": f"${price_min} – ${price_max}" if valid_prices else "N/A",
+        "Source": "Google Flights via TARS v6.0",
     }
     for i, (k, v) in enumerate(summary.items()):
         ws.cell(row=srow + 1 + i, column=1, value=k).font = Font(name="Helvetica Neue", size=10, bold=True)
         ws.cell(row=srow + 1 + i, column=2, value=v).font = data_font
 
-    widths = [12, 12, 10, 18, 12, 14, 12, 8, 10]
+    widths = [5, 12, 12, 10, 18, 12, 14, 12, 8, 10]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+    # ═══════════════════════════════════════════════════
+    #  SHEET 3: Insights (airline breakdown)
+    # ═══════════════════════════════════════════════════
+    if airline_counts:
+        ws2 = wb.create_sheet(title="Insights")
+        ws2.sheet_properties.tabColor = "F59E0B"
+        ws2.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+        ws2.cell(row=1, column=1, value="💡 Cheapest Dates Intelligence").font = Font(
+            name="Helvetica Neue", size=16, bold=True, color=DARK)
+        ws2.row_dimensions[1].height = 36
+
+        ws2.cell(row=3, column=1, value="📊 PRICE ANALYTICS").font = Font(
+            name="Helvetica Neue", size=12, bold=True, color=DARK)
+        stat_items = [
+            ("Dates Scanned", len(date_results)),
+            ("With Flights", len(valid_prices)),
+            ("Cheapest", f"${price_min}"),
+            ("Average", f"${price_avg}"),
+            ("Highest", f"${price_max}"),
+            ("Range", f"${price_max - price_min}" if valid_prices else "N/A"),
+            ("Airlines Found", len(airline_counts)),
+        ]
+        for i, (label, val) in enumerate(stat_items):
+            ws2.cell(row=4 + i, column=1, value=label).font = Font(name="Helvetica Neue", size=10, bold=True)
+            ws2.cell(row=4 + i, column=2, value=str(val)).font = data_font
+
+        # Airline Breakdown Table
+        arow = 4 + len(stat_items) + 2
+        ws2.cell(row=arow, column=1, value="✈️ AIRLINE COMPARISON").font = Font(
+            name="Helvetica Neue", size=12, bold=True, color=DARK)
+        arow += 1
+        for col_idx, h in enumerate(["Airline", "Cheapest", "Average", "Dates Available", "Status"], 1):
+            cell = ws2.cell(row=arow, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        sorted_airlines = sorted(airline_counts.items(), key=lambda x: x[1]["min_price"])
+        for ai, (name, data) in enumerate(sorted_airlines):
+            r = arow + 1 + ai
+            ws2.cell(row=r, column=1, value=name).font = Font(name="Helvetica Neue", size=10, bold=True)
+            ws2.cell(row=r, column=2, value=data["min_price"]).font = data_font
+            ws2.cell(row=r, column=2).number_format = '$#,##0'
+            ws2.cell(row=r, column=3, value=data["avg_price"]).font = data_font
+            ws2.cell(row=r, column=3).number_format = '$#,##0'
+            ws2.cell(row=r, column=4, value=data["count"]).font = data_font
+            if ai == 0:
+                ws2.cell(row=r, column=5, value="💰 Best Price").font = Font(
+                    name="Helvetica Neue", size=10, bold=True, color=GREEN)
+            elif data["min_price"] <= price_avg:
+                ws2.cell(row=r, column=5, value="Competitive").font = Font(
+                    name="Helvetica Neue", size=10, color=BLUE)
+            else:
+                ws2.cell(row=r, column=5, value="Above Average").font = Font(
+                    name="Helvetica Neue", size=10, color=RED)
+
+        # Data bars on Cheapest column
+        cheapest_range = f"B{arow+1}:B{arow+len(sorted_airlines)}"
+        ws2.conditional_formatting.add(cheapest_range, DataBarRule(
+            start_type="min", end_type="max",
+            color="059669", showValue=True, minLength=None, maxLength=None,
+        ))
+
+        # ── Smart Tips ──
+        tips_row = arow + len(sorted_airlines) + 3
+        ws2.cell(row=tips_row, column=1, value="💡 SMART TIPS").font = Font(
+            name="Helvetica Neue", size=12, bold=True, color=DARK)
+        tips = []
+        if len(valid_prices) >= 3:
+            cheapest_day = cheapest.get("day", "")
+            tips.append(f"🏆 Best day to fly: {cheapest_day} — {cheapest['price']} on {cheapest['airline']}")
+        if price_max > price_min * 2:
+            tips.append(f"📈 Prices vary by {round((price_max/price_min - 1)*100)}% — date flexibility saves big!")
+        if len(airline_counts) > 1:
+            tips.append(f"✈️ {len(airline_counts)} airlines compete on this route — compare for best deals")
+        cheapest_airline = sorted_airlines[0][0] if sorted_airlines else ""
+        if cheapest_airline:
+            tips.append(f"💰 {cheapest_airline} consistently offers the lowest prices")
+        tips.append(f"📅 Scanned {len(date_results)} dates across {(end - start).days} day range")
+        for ti, tip in enumerate(tips):
+            ws2.cell(row=tips_row + 1 + ti, column=1, value=tip).font = data_font
+
+        for col in range(1, 6):
+            ws2.column_dimensions[get_column_letter(col)].width = 20
 
     safe = f"Cheapest_Dates_{origin_code}_{dest_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     filepath = os.path.join(REPORT_DIR, safe)
@@ -3101,9 +3446,9 @@ def _search_single_date(args: tuple) -> dict:
         if flights:
             best = flights[0]
             price = _price_num(best.get("price", "$99999"))
-            airline_link = _get_airline_booking_url(
+            verified_url = _get_verified_booking_link(
                 best.get("airline", ""), origin, destination, date_str)
-            booking_link = airline_link or best.get("booking_link", gf_link)
+            booking_link = verified_url or best.get("booking_link", gf_link)
             result = {
                 "date": date_str, "day": dt.strftime("%A"),
                 "price": best.get("price", "—"), "price_num": price,
@@ -3366,8 +3711,8 @@ def track_flight_price(
 
     already_hit = current_price and current_price <= target_price
     if already_hit:
-        airline_link = _get_airline_booking_url(current_airline, origin, destination, depart_date, return_date)
-        booking_link = airline_link or _build_booking_link(origin, destination, depart_date, return_date, trip_type)
+        verified_link = _get_verified_booking_link(current_airline, origin, destination, depart_date, return_date)
+        booking_link = verified_link or _build_booking_link(origin, destination, depart_date, return_date, trip_type)
         _send_price_alert(tracker, current_price, current_airline, booking_link)
         content = (
             f"🎯 Tracker set: {origin_code}→{dest_code} on {depart}\n"
@@ -3529,11 +3874,11 @@ def check_price_trackers() -> dict:
             tracker["price_history"] = tracker["price_history"][-50:]
 
             if price <= tracker["target_price"]:
-                # Use airline-specific booking link for alerts
-                airline_link = _get_airline_booking_url(
+                # Use verified airline booking link for alerts
+                verified_link = _get_verified_booking_link(
                     airline, tracker["origin"], tracker["destination"],
                     tracker["depart_date"], tracker.get("return_date", ""))
-                booking_link = airline_link or _build_booking_link(
+                booking_link = verified_link or _build_booking_link(
                     tracker["origin"], tracker["destination"],
                     tracker["depart_date"], tracker.get("return_date", ""),
                     tracker.get("trip_type", "round_trip"),
