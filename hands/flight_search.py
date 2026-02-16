@@ -1,17 +1,18 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       TARS — Flight Engine v5.0 (Structured DOM + Intel)     ║
+║       TARS — Flight Engine v6.0 (Visual + Verified)          ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
 ║  Phase 1:  Core Engine — Google Flights URL builder, parser  ║
 ║  Phase 2:  Booking Links — Google Flights link per flight    ║
-║  Phase 2B: Airline Direct — 25+ airline deep link generator  ║
+║  Phase 2B: Airline Direct — 40+ airline deep link generator  ║
 ║  Phase 3:  Smart Sampling — 6-month range (weekly cadence)   ║
 ║  Phase 4:  HTML Email Templates — airline-grade design       ║
-║  Phase 5:  Enhanced Excel — hyperlinks, conditional color    ║
+║  Phase 5:  Enhanced Excel — charts, data bars, dashboard     ║
 ║  Phase 6:  Price Tracker — persistent JSON DB for routes     ║
+║  Phase 6B: SMTP Email — direct Outlook SMTP, no Mail.app     ║
 ║  Phase 7:  Alert Engine — background price checks + alerts   ║
-║  Phase 8:  Rich HTML Email — properly rendered via Mail.app  ║
+║  Phase 8:  Rich HTML Email — properly rendered via SMTP      ║
 ║  Phase 9:  Pipeline Integration — report + email + notify    ║
 ║  Phase 10: Tool Registration — brain tools + executor        ║
 ║  Phase 11: Intelligence Layer — suggestions, analytics,      ║
@@ -20,6 +21,9 @@
 ║  Phase 13: Return Flight + Layover + Fare + Baggage parsing  ║
 ║  Phase 14: Google Price Insights scraping                    ║
 ║  Phase 15: Search Cache + CDP Retry + Parallel Scanning      ║
+║  Phase 16: Link Verification — HTTP check before sending     ║
+║  Phase 17: Excel Dashboard — charts, conditional formatting, ║
+║            KPI cards, bar/pie charts, color scales            ║
 ║                                                              ║
 ║  ⚠️ ONLY Google Flights. NEVER Kayak/Skyscanner/Expedia.    ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -506,7 +510,10 @@ AIRLINE_BOOKING_URLS = {
     "emirates": {
         "base": "https://www.emirates.com",
         "search": lambda o, d, dep, ret: (
-            f"https://www.emirates.com/us/english/book/flights/"
+            f"https://www.emirates.com/us/english/book/"
+            f"?from={o}&to={d}&departing={dep}"
+            + (f"&returning={ret}" if ret else "")
+            + f"&pax=1&class=Economy&trip={'return' if ret else 'oneWay'}"
         ),
     },
     "qatar airways": {
@@ -516,18 +523,25 @@ AIRLINE_BOOKING_URLS = {
             f"?from={o}&to={d}&departing={dep}"
             + (f"&returning={ret}" if ret else "")
             + f"&adults=1&children=0&infants=0"
+            + f"&trip={'return' if ret else 'oneway'}&class=Economy"
         ),
     },
     "turkish airlines": {
         "base": "https://www.turkishairlines.com",
         "search": lambda o, d, dep, ret: (
             f"https://www.turkishairlines.com/en-us/flights/"
+            f"?portO={o}&portD={d}&departureDateM={dep}"
+            + (f"&returnDateM={ret}" if ret else "")
+            + f"&adult=1&tripType={'RT' if ret else 'OW'}&cabinClass=ECONOMY"
         ),
     },
     "singapore airlines": {
         "base": "https://www.singaporeair.com",
         "search": lambda o, d, dep, ret: (
             f"https://www.singaporeair.com/en_UK/plan-and-book/booking/"
+            f"?from={o}&to={d}&departDate={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+            + f"&cabinClass=Y&adults=1"
         ),
     },
     "air france": {
@@ -588,6 +602,185 @@ AIRLINE_BOOKING_URLS = {
         "base": "https://www.westjet.com",
         "search": lambda o, d, dep, ret: (
             f"https://www.westjet.com/en-ca/book-trip/flights"
+        ),
+    },
+    "etihad": {
+        "base": "https://www.etihad.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.etihad.com/en-us/fly-etihad/book-a-flight"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1&class=Economy&trip={'return' if ret else 'oneWay'}"
+        ),
+    },
+    "korean air": {
+        "base": "https://www.koreanair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.koreanair.com/booking/best-prices"
+            f"?tripType={'RT' if ret else 'OW'}&origin={o}&destination={d}"
+            f"&departDate={dep}" + (f"&returnDate={ret}" if ret else "")
+            + f"&adt=1&cabin=Y"
+        ),
+    },
+    "cathay pacific": {
+        "base": "https://www.cathaypacific.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.cathaypacific.com/cx/en_US/book-a-trip/flight-search.html"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1&class=economy"
+        ),
+    },
+    "pia": {
+        "base": "https://www.piac.com.pk",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.piac.com.pk/booking"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1&trip={'RT' if ret else 'OW'}"
+        ),
+    },
+    "air india": {
+        "base": "https://www.airindia.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.airindia.com/in/en/book.html"
+            f"?from={o}&to={d}&date={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+            + f"&adults=1&tripType={'RT' if ret else 'OW'}"
+        ),
+    },
+    "saudia": {
+        "base": "https://www.saudia.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.saudia.com/booking/flights"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "eva air": {
+        "base": "https://www.evaair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.evaair.com/en-us/booking/"
+            f"?origin={o}&destination={d}&departureDate={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+        ),
+    },
+    "latam": {
+        "base": "https://www.latamairlines.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.latamairlines.com/us/en/booking"
+            f"?origin={o}&destination={d}&outbound={dep}"
+            + (f"&inbound={ret}" if ret else "")
+            + f"&adt=1&cabin=Economy"
+        ),
+    },
+    "norwegian": {
+        "base": "https://www.norwegian.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.norwegian.com/us/booking/flight-offers/"
+            f"?from={o}&to={d}&d_date={dep}"
+            + (f"&r_date={ret}" if ret else "")
+            + f"&adults=1&tripType={'roundTrip' if ret else 'oneWay'}"
+        ),
+    },
+    "aeromexico": {
+        "base": "https://www.aeromexico.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.aeromexico.com/en-us/booking"
+            f"?from={o}&to={d}&date={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "iberia": {
+        "base": "https://www.iberia.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.iberia.com/us/flights/"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1&cabin=Economy"
+        ),
+    },
+    "aer lingus": {
+        "base": "https://www.aerlingus.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.aerlingus.com/booking/select-flights"
+            f"?from={o}&to={d}&date={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "finnair": {
+        "base": "https://www.finnair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.finnair.com/en/booking"
+            f"?origin={o}&destination={d}&departureDate={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "icelandair": {
+        "base": "https://www.icelandair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.icelandair.com/flights/search/"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "thai airways": {
+        "base": "https://www.thaiairways.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.thaiairways.com/en/booking/flight-search.page"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1&cabin=Economy"
+        ),
+    },
+    "qantas": {
+        "base": "https://www.qantas.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.qantas.com/us/en/book-a-trip/flights.html"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1&cabin=economy"
+        ),
+    },
+    "air new zealand": {
+        "base": "https://www.airnewzealand.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.airnewzealand.com/book/flights"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "philippine airlines": {
+        "base": "https://www.philippineairlines.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.philippineairlines.com/booking"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "ethiopian airlines": {
+        "base": "https://www.ethiopianairlines.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.ethiopianairlines.com/booking/flight"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1"
+        ),
+    },
+    "royal jordanian": {
+        "base": "https://www.rj.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.rj.com/en/book-a-trip/flights"
+            f"?from={o}&to={d}&departure={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&adults=1"
         ),
     },
 }
@@ -689,6 +882,67 @@ def _get_airline_booking_url(airline_name: str, origin: str, destination: str,
     dep = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
     q = f"flights from {origin_code} to {dest_code} on {dep} {airline_name}"
     return f"https://www.google.com/travel/flights?q={urllib.parse.quote_plus(q)}"
+
+
+def _verify_booking_link(url: str, timeout: int = 8) -> bool:
+    """Verify a booking link is reachable (HTTP HEAD/GET check).
+
+    Returns True if the link returns a valid response (not 404/500/timeout).
+    """
+    if not url or "google.com/travel" in url:
+        return True  # Google Flights links are always valid
+
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, method="HEAD", headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Accept": "text/html",
+        })
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        return resp.status < 400
+    except Exception:
+        # HEAD might be blocked, try GET with range
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept": "text/html",
+                "Range": "bytes=0-1024",
+            })
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            return resp.status < 400
+        except Exception:
+            return False
+
+
+def _get_verified_booking_link(airline_name: str, origin: str, destination: str,
+                                depart_date: str, return_date: str = "",
+                                search_url: str = "") -> str:
+    """Get a booking link and verify it works. Falls back to Google Flights if broken.
+
+    Priority:
+      1. Airline-specific deep link (verified)
+      2. Google Flights direct search URL
+    """
+    # Try airline-specific link
+    airline_url = _get_airline_booking_url(airline_name, origin, destination, depart_date, return_date)
+
+    if airline_url and "google.com/travel" not in airline_url:
+        # Verify the airline link works
+        if _verify_booking_link(airline_url):
+            return airline_url
+        else:
+            print(f"    ⚠️ Broken link for {airline_name}: {airline_url[:60]}... → using Google Flights")
+
+    # Fallback: Google Flights search URL (always works)
+    if search_url:
+        return search_url
+
+    # Build a Google Flights search URL as final fallback
+    origin_code = _resolve_airport(origin)
+    dest_code = _resolve_airport(destination)
+    dep = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
+    return _build_booking_link(origin, destination, dep, return_date)
 
 
 # ═══════════════════════════════════════════════════════
@@ -1623,7 +1877,7 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
       <h1 style="color:#FFFFFF;font-size:24px;font-weight:700;margin:0;">Flight Intelligence Report</h1>
       <p style="color:#94A3B8;font-size:14px;margin:8px 0 0;">{origin_code} → {dest_code} · {date_display}</p>
       <div style="margin-top:12px;display:inline-block;background:rgba(255,255,255,0.1);padding:4px 14px;border-radius:20px;">
-        <span style="color:#94A3B8;font-size:11px;letter-spacing:0.5px;">POWERED BY TARS v5</span>
+        <span style="color:#94A3B8;font-size:11px;letter-spacing:0.5px;">POWERED BY TARS v6</span>
       </div>
     </div>
 
@@ -1724,8 +1978,8 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
     </div>
 
     <div style="background:#0F172A;padding:24px;text-align:center;">
-      <p style="color:#64748B;font-size:11px;margin:0;">TARS Flight Intelligence v5.0 · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
-      <p style="color:#475569;font-size:10px;margin:4px 0 0;">Prices may change. Links go directly to airline booking pages. Value scores combine price, duration, stops, layover quality, and baggage.</p>
+      <p style="color:#64748B;font-size:11px;margin:0;">TARS Flight Intelligence v6.0 · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+      <p style="color:#475569;font-size:10px;margin:4px 0 0;">Prices may change. Links verified before sending. Value scores combine price, duration, stops, layover quality, and baggage.</p>
     </div>
   </div>
 </body>
@@ -2037,11 +2291,12 @@ def search_flights(
         if max_price > 0:
             flights = [f for f in flights if _price_num(f.get("price", "$99999")) <= max_price]
 
-        # Assign per-flight airline booking links
+        # Assign per-flight airline booking links (verified)
         for f in flights:
             airline = f.get("airline", "—")
-            airline_url = _get_airline_booking_url(airline, origin, destination, depart_date, return_date)
-            f["booking_link"] = airline_url if airline_url else url
+            verified_url = _get_verified_booking_link(
+                airline, origin, destination, depart_date, return_date, search_url=url)
+            f["booking_link"] = verified_url
 
         # v5.0 — Intelligence layer (value scores + analytics)
         intel = _analyze_flights(flights, origin_code, dest_code, depart, ret_parsed)
@@ -2081,31 +2336,209 @@ def search_flights(
 # ═══════════════════════════════════════════════════════
 
 def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, summary_data=None, analytics=None, suggestions=None):
-    """Generate a professional Excel report with hyperlinks, value scores, and insights sheet."""
+    """Generate a premium Excel report with charts, conditional formatting, hyperlinks, and dashboard."""
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
         from openpyxl.utils import get_column_letter
+        from openpyxl.chart import BarChart, PieChart, Reference
+        from openpyxl.chart.series import DataPoint
+        from openpyxl.chart.label import DataLabelList
+        from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, DataBarRule
     except ImportError:
         return {"success": False, "content": "openpyxl not installed"}
 
     REPORT_DIR = os.path.expanduser("~/Documents/TARS_Reports")
     os.makedirs(REPORT_DIR, exist_ok=True)
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Flights"
 
+    # ── Color Palette ──
     DARK, GREEN, BLUE, GRAY = "0F172A", "059669", "2563EB", "64748B"
-    ALT_ROW, WHITE = "F1F5F9", "FFFFFF"
+    ALT_ROW, WHITE, RED = "F1F5F9", "FFFFFF", "DC2626"
+    GOLD, ORANGE, PURPLE = "F59E0B", "EA580C", "7C3AED"
     header_font = Font(name="Helvetica Neue", size=11, bold=True, color=WHITE)
     header_fill = PatternFill(start_color=DARK, end_color=DARK, fill_type="solid")
     data_font = Font(name="Helvetica Neue", size=10)
     link_font = Font(name="Helvetica Neue", size=10, color=BLUE, underline="single")
     alt_fill = PatternFill(start_color=ALT_ROW, end_color=ALT_ROW, fill_type="solid")
+    green_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+    gold_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
     thin_border = Border(
         left=Side(style="thin", color="E2E8F0"), right=Side(style="thin", color="E2E8F0"),
         top=Side(style="thin", color="E2E8F0"), bottom=Side(style="thin", color="E2E8F0"),
     )
+
+    # ═══════════════════════════════════════════════════
+    #  SHEET 1: Dashboard Overview
+    # ═══════════════════════════════════════════════════
+    ws_dash = wb.active
+    ws_dash.title = "Dashboard"
+    ws_dash.sheet_properties.tabColor = "059669"
+
+    # Title
+    ws_dash.merge_cells("A1:H1")
+    ws_dash.cell(row=1, column=1, value=f"✈️ TARS Flight Intelligence Dashboard").font = Font(
+        name="Helvetica Neue", size=22, bold=True, color=DARK)
+    ws_dash.row_dimensions[1].height = 48
+    ws_dash.merge_cells("A2:H2")
+    ws_dash.cell(row=2, column=1, value=f"{title} · Generated {datetime.now().strftime('%B %d, %Y at %I:%M %p')}").font = Font(
+        name="Helvetica Neue", size=10, italic=True, color=GRAY)
+    ws_dash.row_dimensions[2].height = 22
+
+    # KPI Cards Row
+    kpi_row = 4
+    kpi_items = []
+    if analytics:
+        kpi_items = [
+            ("💰 CHEAPEST", f"${analytics.get('price_min', 'N/A')}", GREEN),
+            ("📊 AVERAGE", f"${analytics.get('price_avg', 'N/A')}", BLUE),
+            ("📈 HIGHEST", f"${analytics.get('price_max', 'N/A')}", RED),
+            ("✈️ TOTAL", str(analytics.get('total_flights', len(flights))), DARK),
+            ("🛫 NONSTOP", str(analytics.get('nonstop_count', 0)), PURPLE),
+            ("🏢 AIRLINES", str(analytics.get('airline_count', 0)), ORANGE),
+        ]
+    else:
+        cheapest_price = flights[0].get("price", "?") if flights else "?"
+        kpi_items = [
+            ("💰 CHEAPEST", str(cheapest_price), GREEN),
+            ("✈️ TOTAL", str(len(flights)), DARK),
+        ]
+
+    for ki, (kpi_label, kpi_val, kpi_color) in enumerate(kpi_items):
+        col = ki * 2 + 1
+        # Card background
+        for r_off in range(3):
+            for c_off in range(2):
+                cell = ws_dash.cell(row=kpi_row + r_off, column=col + c_off)
+                cell.fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+                cell.border = thin_border
+        ws_dash.merge_cells(start_row=kpi_row, start_column=col, end_row=kpi_row, end_column=col + 1)
+        ws_dash.cell(row=kpi_row, column=col, value=kpi_label).font = Font(
+            name="Helvetica Neue", size=9, bold=True, color=GRAY)
+        ws_dash.cell(row=kpi_row, column=col).alignment = Alignment(horizontal="center")
+        ws_dash.merge_cells(start_row=kpi_row + 1, start_column=col, end_row=kpi_row + 1, end_column=col + 1)
+        ws_dash.cell(row=kpi_row + 1, column=col, value=kpi_val).font = Font(
+            name="Helvetica Neue", size=20, bold=True, color=kpi_color)
+        ws_dash.cell(row=kpi_row + 1, column=col).alignment = Alignment(horizontal="center")
+
+    # ── Price Bar Chart ──
+    chart_data_row = kpi_row + 5
+    ws_dash.cell(row=chart_data_row - 1, column=1, value="Price Chart Data:").font = Font(
+        name="Helvetica Neue", size=8, color=GRAY)
+    ws_dash.cell(row=chart_data_row, column=1, value="Airline").font = Font(
+        name="Helvetica Neue", size=9, bold=True, color=GRAY)
+    ws_dash.cell(row=chart_data_row, column=2, value="Price ($)").font = Font(
+        name="Helvetica Neue", size=9, bold=True, color=GRAY)
+
+    chart_flights = flights[:10]
+    for ci, f in enumerate(chart_flights):
+        ws_dash.cell(row=chart_data_row + 1 + ci, column=1, value=f.get("airline", "?")[:15]).font = data_font
+        price_val = _price_num(f.get("price", "$0"))
+        ws_dash.cell(row=chart_data_row + 1 + ci, column=2, value=price_val).font = data_font
+
+    if chart_flights:
+        bar_chart = BarChart()
+        bar_chart.type = "col"
+        bar_chart.style = 10
+        bar_chart.title = "Price Comparison"
+        bar_chart.y_axis.title = "Price ($)"
+        bar_chart.x_axis.title = "Airline"
+        bar_chart.width = 24
+        bar_chart.height = 14
+
+        data_ref = Reference(ws_dash, min_col=2, min_row=chart_data_row,
+                             max_row=chart_data_row + len(chart_flights))
+        cats_ref = Reference(ws_dash, min_col=1, min_row=chart_data_row + 1,
+                             max_row=chart_data_row + len(chart_flights))
+        bar_chart.add_data(data_ref, titles_from_data=True)
+        bar_chart.set_categories(cats_ref)
+        bar_chart.shape = 4
+
+        # Color the bars
+        from openpyxl.chart.series import DataPoint
+        from openpyxl.drawing.fill import PatternFillProperties, ColorChoice
+        series = bar_chart.series[0]
+        series.graphicalProperties.solidFill = "2563EB"
+        # Highlight cheapest bar in green
+        pt = DataPoint(idx=0)
+        pt.graphicalProperties.solidFill = "059669"
+        series.data_points.append(pt)
+
+        ws_dash.add_chart(bar_chart, f"D{chart_data_row - 1}")
+
+    # ── Airline Pie Chart ──
+    if analytics and analytics.get("airline_stats"):
+        airline_stats = analytics["airline_stats"]
+        pie_data_row = chart_data_row + len(chart_flights) + 4
+        ws_dash.cell(row=pie_data_row - 1, column=1, value="Airline Distribution:").font = Font(
+            name="Helvetica Neue", size=8, color=GRAY)
+        ws_dash.cell(row=pie_data_row, column=1, value="Airline").font = Font(
+            name="Helvetica Neue", size=9, bold=True, color=GRAY)
+        ws_dash.cell(row=pie_data_row, column=2, value="Flights").font = Font(
+            name="Helvetica Neue", size=9, bold=True, color=GRAY)
+
+        for ai, (aname, adata) in enumerate(list(airline_stats.items())[:8]):
+            ws_dash.cell(row=pie_data_row + 1 + ai, column=1, value=aname).font = data_font
+            ws_dash.cell(row=pie_data_row + 1 + ai, column=2, value=adata.get("count", 0)).font = data_font
+
+        if airline_stats:
+            pie_chart = PieChart()
+            pie_chart.title = "Flights by Airline"
+            pie_chart.style = 10
+            pie_chart.width = 14
+            pie_chart.height = 12
+
+            pie_data = Reference(ws_dash, min_col=2, min_row=pie_data_row,
+                                 max_row=pie_data_row + min(len(airline_stats), 8))
+            pie_cats = Reference(ws_dash, min_col=1, min_row=pie_data_row + 1,
+                                 max_row=pie_data_row + min(len(airline_stats), 8))
+            pie_chart.add_data(pie_data, titles_from_data=True)
+            pie_chart.set_categories(pie_cats)
+
+            # Labels
+            pie_chart.dataLabels = DataLabelList()
+            pie_chart.dataLabels.showPercent = True
+            pie_chart.dataLabels.showVal = False
+
+            # Color slices
+            pie_colors = ["059669", "2563EB", "F59E0B", "DC2626", "7C3AED", "EA580C", "0891B2", "4F46E5"]
+            for pi in range(min(len(airline_stats), 8)):
+                pt = DataPoint(idx=pi)
+                pt.graphicalProperties.solidFill = pie_colors[pi % len(pie_colors)]
+                pie_chart.series[0].data_points.append(pt)
+
+            ws_dash.add_chart(pie_chart, f"D{pie_data_row - 1}")
+
+    # ── Summary Info ──
+    if summary_data:
+        srow = 4
+        scol = 14  # Far right
+        ws_dash.cell(row=srow, column=scol, value="📋 SEARCH SUMMARY").font = Font(
+            name="Helvetica Neue", size=12, bold=True, color=DARK)
+        for si, (sk, sv) in enumerate(summary_data.items()):
+            ws_dash.cell(row=srow + 1 + si, column=scol, value=sk).font = Font(
+                name="Helvetica Neue", size=10, bold=True, color=GRAY)
+            ws_dash.cell(row=srow + 1 + si, column=scol + 1, value=sv).font = data_font
+
+    # ── Suggestions ──
+    if suggestions:
+        sug_row = (srow + len(summary_data) + 3) if summary_data else kpi_row + 8
+        ws_dash.cell(row=sug_row, column=14, value="💡 SMART TIPS").font = Font(
+            name="Helvetica Neue", size=12, bold=True, color=DARK)
+        for si, s in enumerate(suggestions[:6]):
+            ws_dash.cell(row=sug_row + 1 + si, column=14,
+                         value=f"{s['icon']} {s['text']}").font = Font(
+                name="Helvetica Neue", size=10, color=DARK)
+
+    # Column widths for dashboard
+    for col in range(1, 16):
+        ws_dash.column_dimensions[get_column_letter(col)].width = 12
+
+    # ═══════════════════════════════════════════════════
+    #  SHEET 2: All Flights (the data table)
+    # ═══════════════════════════════════════════════════
+    ws = wb.create_sheet(title="Flights")
+    ws.sheet_properties.tabColor = "2563EB"
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=12)
     ws.cell(row=1, column=1, value=f"✈️ {title}").font = Font(name="Helvetica Neue", size=18, bold=True, color=DARK)
@@ -2133,7 +2566,9 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
             layover = f"via {f['layover_airport']}"
             if f.get("layover_duration"):
                 layover += f" ({f['layover_duration']})"
-        values = [i, f.get("price", "—"), f.get("airline", "—"), f.get("depart_time", "—"),
+
+        price_val = _price_num(f.get("price", "$0"))
+        values = [i, price_val, f.get("airline", "—"), f.get("depart_time", "—"),
                   f.get("arrive_time", "—"), f.get("duration", "—"), f.get("stops", "—"),
                   layover, f.get("fare_class", "—"), f.get("baggage", "—"), val_score, ""]
         for col_idx, val in enumerate(values, 1):
@@ -2143,8 +2578,13 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
             cell.alignment = Alignment(vertical="center")
             if i % 2 == 0:
                 cell.fill = alt_fill
-            if col_idx == 2:
-                cell.font = Font(name="Helvetica Neue", size=11, bold=True, color=GREEN) if i == 1 else Font(name="Helvetica Neue", size=10, bold=True)
+            if col_idx == 2:  # Price column
+                cell.number_format = '$#,##0'
+                if i == 1:
+                    cell.font = Font(name="Helvetica Neue", size=11, bold=True, color=GREEN)
+                    cell.fill = green_fill
+                else:
+                    cell.font = Font(name="Helvetica Neue", size=10, bold=True)
             if col_idx == 11:  # Value column
                 if val_score >= 80:
                     cell.font = Font(name="Helvetica Neue", size=10, bold=True, color=GREEN)
@@ -2157,6 +2597,28 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
         link_cell.alignment = Alignment(horizontal="center", vertical="center")
         link_cell.border = thin_border
 
+    # ── Conditional Formatting: Price column data bars ──
+    data_end_row = start_row + min(len(flights), 20)
+    price_range_str = f"B{start_row+1}:B{data_end_row}"
+    ws.conditional_formatting.add(price_range_str, DataBarRule(
+        start_type="min", end_type="max",
+        color="2563EB", showValue=True, minLength=None, maxLength=None,
+    ))
+
+    # ── Conditional Formatting: Value score color scale ──
+    value_range_str = f"K{start_row+1}:K{data_end_row}"
+    ws.conditional_formatting.add(value_range_str, ColorScaleRule(
+        start_type="min", start_color="FEE2E2",  # Red for low
+        mid_type="percentile", mid_value=50, mid_color="FEF3C7",  # Yellow for mid
+        end_type="max", end_color="DCFCE7",  # Green for high
+    ))
+
+    # ── Conditional Formatting: Highlight cheapest row ──
+    ws.conditional_formatting.add(f"A{start_row+1}:L{start_row+1}", CellIsRule(
+        operator="notEqual", formula=['""'],
+        fill=green_fill,
+    ))
+
     if summary_data:
         srow = start_row + len(flights[:20]) + 2
         ws.cell(row=srow, column=1, value="Summary").font = Font(name="Helvetica Neue", size=13, bold=True, color=DARK)
@@ -2168,9 +2630,12 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    # v4.0 — Add Insights sheet with analytics and suggestions
+    # ═══════════════════════════════════════════════════
+    #  SHEET 3: Insights (analytics + suggestions)
+    # ═══════════════════════════════════════════════════
     if analytics or suggestions:
         ws2 = wb.create_sheet(title="Insights")
+        ws2.sheet_properties.tabColor = "F59E0B"
         ws2.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
         ws2.cell(row=1, column=1, value="💡 Flight Intelligence Insights").font = Font(name="Helvetica Neue", size=16, bold=True, color=DARK)
         ws2.row_dimensions[1].height = 36
@@ -2187,13 +2652,13 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
                     val = f"${val}"
                 ws2.cell(row=4+i, column=2, value=str(val)).font = data_font
 
-            # Airline breakdown
-            airlines = analytics.get("airlines", {})
+            # Airline breakdown with mini price bars
+            airlines = analytics.get("airline_stats", analytics.get("airlines", {}))
             if airlines:
                 arow = 4 + len(stat_keys) + 2
                 ws2.cell(row=arow, column=1, value="✈️ AIRLINE COMPARISON").font = Font(name="Helvetica Neue", size=12, bold=True, color=DARK)
                 arow += 1
-                for col_idx, h in enumerate(["Airline", "Cheapest", "Average", "Flights", "Nonstop"], 1):
+                for col_idx, h in enumerate(["Airline", "Cheapest", "Average", "Flights", "Nonstop", "Status"], 1):
                     cell = ws2.cell(row=arow, column=col_idx, value=h)
                     cell.font = header_font
                     cell.fill = header_fill
@@ -2201,19 +2666,65 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
                 for ai, (name, data) in enumerate(airlines.items()):
                     r = arow + 1 + ai
                     ws2.cell(row=r, column=1, value=name).font = Font(name="Helvetica Neue", size=10, bold=True)
-                    ws2.cell(row=r, column=2, value=f"${data['min']}").font = data_font
-                    ws2.cell(row=r, column=3, value=f"${data['avg']}").font = data_font
-                    ws2.cell(row=r, column=4, value=data['count']).font = data_font
-                    ws2.cell(row=r, column=5, value="✓" if data.get('has_nonstop') else "—").font = data_font
+                    min_val = data.get('min', 0)
+                    avg_val = data.get('avg', 0)
+                    ws2.cell(row=r, column=2, value=min_val).font = data_font
+                    ws2.cell(row=r, column=2).number_format = '$#,##0'
+                    ws2.cell(row=r, column=3, value=round(avg_val)).font = data_font
+                    ws2.cell(row=r, column=3).number_format = '$#,##0'
+                    ws2.cell(row=r, column=4, value=data.get('count', 0)).font = data_font
+                    has_ns = data.get('has_nonstop', data.get('nonstop', 0))
+                    ws2.cell(row=r, column=5, value="✓" if has_ns else "—").font = data_font
+                    # Status: cheapest airline gets green, expensive gets red
+                    if ai == 0:
+                        ws2.cell(row=r, column=6, value="💰 Best Price").font = Font(
+                            name="Helvetica Neue", size=10, bold=True, color=GREEN)
+                    elif min_val and analytics.get("price_avg") and min_val > analytics["price_avg"]:
+                        ws2.cell(row=r, column=6, value="Above Average").font = Font(
+                            name="Helvetica Neue", size=10, color=RED)
+                    else:
+                        ws2.cell(row=r, column=6, value="Competitive").font = Font(
+                            name="Helvetica Neue", size=10, color=BLUE)
+
+                # Add data bars to Cheapest column
+                cheapest_range = f"B{arow+1}:B{arow+len(airlines)}"
+                ws2.conditional_formatting.add(cheapest_range, DataBarRule(
+                    start_type="min", end_type="max",
+                    color="059669", showValue=True, minLength=None, maxLength=None,
+                ))
+
+                # ── Airline Price Comparison Chart ──
+                airline_chart = BarChart()
+                airline_chart.type = "bar"
+                airline_chart.style = 10
+                airline_chart.title = "Cheapest Price by Airline"
+                airline_chart.x_axis.title = "Price ($)"
+                airline_chart.width = 20
+                airline_chart.height = max(8, len(airlines))
+
+                ac_data = Reference(ws2, min_col=2, min_row=arow,
+                                    max_row=arow + len(airlines))
+                ac_cats = Reference(ws2, min_col=1, min_row=arow + 1,
+                                    max_row=arow + len(airlines))
+                airline_chart.add_data(ac_data, titles_from_data=True)
+                airline_chart.set_categories(ac_cats)
+                airline_chart.series[0].graphicalProperties.solidFill = "2563EB"
+
+                ws2.add_chart(airline_chart, f"A{arow + len(airlines) + 2}")
 
         if suggestions:
-            srow2 = (4 + len(stat_keys) + 2 + len(analytics.get("airlines", {})) + 4) if analytics else 3
+            srow2 = (4 + len(stat_keys) + 2 + len(analytics.get("airline_stats", analytics.get("airlines", {}))) + 4) if analytics else 3
+            srow2 = max(srow2, 3)
+            # Find the right row after any chart
+            if analytics and analytics.get("airline_stats", analytics.get("airlines", {})):
+                srow2 = 4 + len(stat_keys) + 2 + len(analytics.get("airline_stats", analytics.get("airlines", {}))) + 20  # After chart
             ws2.cell(row=srow2, column=1, value="💡 SMART SUGGESTIONS").font = Font(name="Helvetica Neue", size=12, bold=True, color=DARK)
             for si, s in enumerate(suggestions[:8]):
                 ws2.cell(row=srow2+1+si, column=1, value=f"{s['icon']} {s['type'].upper()}").font = Font(name="Helvetica Neue", size=10, bold=True)
+                ws2.merge_cells(start_row=srow2+1+si, start_column=2, end_row=srow2+1+si, end_column=5)
                 ws2.cell(row=srow2+1+si, column=2, value=s['text']).font = data_font
 
-        for col in range(1, 6):
+        for col in range(1, 7):
             ws2.column_dimensions[get_column_letter(col)].width = 20
 
     safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in title)
@@ -2314,15 +2825,89 @@ def _generate_dates_excel(origin_code, dest_code, date_results, start, end):
 
 
 # ═══════════════════════════════════════════════════════
-#  PHASE 6 — Send HTML Email via Mail.app
+#  PHASE 6 — Send HTML Email via SMTP (Outlook Direct)
 # ═══════════════════════════════════════════════════════
 
 def _send_html_email(to_address, subject, html_body, attachment_path="", from_address="tarsitgroup@outlook.com"):
-    """Send an HTML email via Mail.app with optional attachment.
+    """Send a rich HTML email via Outlook SMTP directly.
 
-    Uses 'html content' property (not 'content') so Mail.app renders HTML
-    instead of showing raw code as plain text.
+    Uses Python smtplib + email.mime for guaranteed HTML rendering.
+    No more Mail.app AppleScript — this ensures the HTML actually shows
+    with charts, colors, and formatting in every email client.
+
+    Outlook SMTP: smtp-mail.outlook.com:587 (STARTTLS)
     """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    SMTP_SERVER = "smtp-mail.outlook.com"
+    SMTP_PORT = 587
+    SMTP_USER = from_address
+    # App password for Outlook SMTP — stored here for simplicity
+    SMTP_PASS = _get_smtp_password()
+
+    if not SMTP_PASS:
+        # Fallback to Mail.app AppleScript if no SMTP password configured
+        return _send_html_email_mailapp(to_address, subject, html_body, attachment_path, from_address)
+
+    try:
+        msg = MIMEMultipart("mixed")
+        msg["From"] = f"TARS Flight Intel <{from_address}>"
+        msg["To"] = to_address
+        msg["Subject"] = subject
+        msg["X-Mailer"] = "TARS Flight Intelligence v5.0"
+
+        # Attach HTML body — this is the key: MIMEText with 'html' subtype
+        html_part = MIMEText(html_body, "html", "utf-8")
+        msg.attach(html_part)
+
+        # Attach Excel file if provided
+        if attachment_path and os.path.isfile(attachment_path):
+            with open(attachment_path, "rb") as f:
+                part = MIMEBase("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                filename = os.path.basename(attachment_path)
+                part.add_header("Content-Disposition", f"attachment; filename=\"{filename}\"")
+                msg.attach(part)
+
+        # Send via Outlook SMTP
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(from_address, to_address, msg.as_string())
+
+        return {"success": True, "content": f"HTML email sent to {to_address}: {subject}"}
+
+    except smtplib.SMTPAuthenticationError:
+        print("    ⚠️ SMTP auth failed — falling back to Mail.app")
+        return _send_html_email_mailapp(to_address, subject, html_body, attachment_path, from_address)
+    except Exception as e:
+        print(f"    ⚠️ SMTP failed ({e}) — falling back to Mail.app")
+        return _send_html_email_mailapp(to_address, subject, html_body, attachment_path, from_address)
+
+
+def _get_smtp_password():
+    """Load SMTP password from config or environment."""
+    # Try environment variable first
+    pwd = os.environ.get("TARS_SMTP_PASSWORD", "")
+    if pwd:
+        return pwd
+    # Try config.yaml
+    try:
+        config = _load_config()
+        return config.get("email", {}).get("smtp_password", "")
+    except Exception:
+        return ""
+
+
+def _send_html_email_mailapp(to_address, subject, html_body, attachment_path="", from_address="tarsitgroup@outlook.com"):
+    """Fallback: Send HTML email via Mail.app AppleScript."""
     import subprocess
     import tempfile
 
