@@ -185,13 +185,18 @@ class ToolExecutor:
             return self.memory.recall(inp["query"])
 
         elif tool_name == "run_quick_command":
-            return run_terminal(inp["command"], timeout=inp.get("timeout", 30))
+            cmd = inp.get("command", "")
+            if not cmd:
+                return {"success": False, "error": True, "content": "⚠️ Missing 'command' parameter. Example: run_quick_command({\"command\": \"ls -la\"})"}
+            return run_terminal(cmd, timeout=inp.get("timeout", 30))
 
         elif tool_name == "quick_read_file":
             return read_file(inp["path"])
 
         elif tool_name == "think":
-            thought = inp["thought"]
+            thought = inp.get("thought", "")
+            if not thought:
+                return {"success": False, "error": True, "content": "⚠️ Empty thought. You MUST provide a 'thought' string. Example: think({\"thought\": \"Analyzing the request...\"})"}
             self.logger.info(f"💭 Brain thinking: {thought[:200]}")
             event_bus.emit("thinking", {"text": thought, "model": "brain"})
             return {"success": True, "content": "Thought recorded. Continue with your plan."}
@@ -624,6 +629,10 @@ class ToolExecutor:
     def _search_flights(self, inp):
         """Handle search_flights brain tool — API-first flight search."""
         try:
+            # Validate required args — Gemini sometimes sends empty {}
+            for req in ("origin", "destination", "depart_date"):
+                if req not in inp or not inp[req]:
+                    return {"success": False, "error": True, "content": f"⚠️ Missing required parameter '{req}'. You MUST provide origin, destination, and depart_date. Example: search_flights({{\"origin\": \"SLC\", \"destination\": \"NYC\", \"depart_date\": \"March 15\"}})"}
             from hands.flight_search import search_flights
             event_bus.emit("tool_start", {"tool": "search_flights", "input": inp})
             result = search_flights(
@@ -645,6 +654,9 @@ class ToolExecutor:
     def _search_flights_report(self, inp):
         """Handle search_flights_report — search + Excel + email pipeline."""
         try:
+            for req in ("origin", "destination", "depart_date"):
+                if req not in inp or not inp[req]:
+                    return {"success": False, "error": True, "content": f"⚠️ Missing required parameter '{req}'. You MUST provide origin, destination, and depart_date. Example: search_flights_report({{\"origin\": \"Tampa\", \"destination\": \"Tokyo\", \"depart_date\": \"March 20\", \"email_to\": \"tarsitgroup@outlook.com\"}})"}
             from hands.flight_search import search_flights_report
             event_bus.emit("tool_start", {"tool": "search_flights_report", "input": inp})
             result = search_flights_report(
@@ -667,6 +679,9 @@ class ToolExecutor:
     def _find_cheapest_dates(self, inp):
         """Handle find_cheapest_dates — scan date range for cheapest flight."""
         try:
+            for req in ("origin", "destination", "start_date"):
+                if req not in inp or not inp[req]:
+                    return {"success": False, "error": True, "content": f"⚠️ Missing required parameter '{req}'. You MUST provide origin, destination, and start_date. Example: find_cheapest_dates({{\"origin\": \"SLC\", \"destination\": \"LAX\", \"start_date\": \"March 1\", \"end_date\": \"March 31\"}})"}
             from hands.flight_search import find_cheapest_dates
             event_bus.emit("tool_start", {"tool": "find_cheapest_dates", "input": inp})
             result = find_cheapest_dates(
@@ -687,6 +702,9 @@ class ToolExecutor:
     def _track_flight_price(self, inp):
         """Handle track_flight_price — set up a price tracker for a route."""
         try:
+            for req in ("origin", "destination", "depart_date", "target_price"):
+                if req not in inp:
+                    return {"success": False, "error": True, "content": f"⚠️ Missing required parameter '{req}'. You MUST provide origin, destination, depart_date, and target_price. Example: track_flight_price({{\"origin\": \"SLC\", \"destination\": \"NYC\", \"depart_date\": \"March 15\", \"target_price\": 200}})"}
             from hands.flight_search import track_flight_price
             event_bus.emit("tool_start", {"tool": "track_flight_price", "input": inp})
             result = track_flight_price(

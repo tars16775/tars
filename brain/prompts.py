@@ -338,6 +338,16 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
   → `stop_tracking` — stops a tracker by ID (e.g., "SLC-NYC-20260315")
   → Use when user asks "what am I tracking?", "stop tracking", "cancel alert"
 
+**Book a flight (OPEN booking page in Chrome):**
+  → `book_flight` — navigates Chrome to the airline's checkout page
+  → Example: book_flight({{"origin": "SLC", "destination": "NYC", "depart_date": "March 15", "return_date": "March 22"}})
+  → Example: book_flight({{"origin": "Tampa", "destination": "Tokyo", "depart_date": "June 1", "airline": "Delta", "cabin": "business"}})
+  → Use when user says "book", "reserve", "buy a flight", "book the cheapest flight"
+  → TARS opens the booking page; user completes payment in Chrome
+
+⚠️ **NEVER use `deploy_research_agent` for flight searches!** Always use the dedicated flight tools above.
+  They use Google Flights with a real DOM parser — far better than research_agent browsing.
+
 NEVER deploy browser_agent for flight searches — these tools handle it directly.
 NEVER deploy research_agent for flight price searches — it will try Kayak/Skyscanner which block bots.
 ⚠️ BANNED SITES: Kayak, Skyscanner, Expedia, Booking.com — they ALL detect automated browsing and serve CAPTCHAs.

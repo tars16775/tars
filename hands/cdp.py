@@ -15,7 +15,6 @@ import subprocess
 import urllib.request
 import websocket
 import os
-import signal
 
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CDP_PORT = 9222

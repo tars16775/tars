@@ -284,19 +284,61 @@ CITY_TO_IATA = {
 
 
 def _resolve_airport(city_or_code: str) -> str:
-    """Resolve a city name or airport code to IATA code."""
-    text = city_or_code.strip().lower()
+    """Resolve a city name or airport code to IATA code.
+    
+    Handles: exact match, 3-letter codes, multi-word inputs like
+    'Lahore Pakistan', 'New York City', 'Salt Lake', etc.
+    Uses longest-match-first to avoid 'la' matching before 'lahore'.
+    """
+    raw = city_or_code.strip()
+    text = raw.lower()
+
+    # 1. Exact match
     if text in CITY_TO_IATA:
         return CITY_TO_IATA[text]
+
+    # 2. Already a 3-letter IATA code
     if len(text) == 3 and text.isalpha():
         return text.upper()
+
+    # 3. Strip common country/region suffixes and retry exact match
+    _STRIP = ['pakistan', 'india', 'china', 'japan', 'korea', 'nepal',
+              'bangladesh', 'sri lanka', 'thailand', 'vietnam', 'indonesia',
+              'malaysia', 'philippines', 'turkey', 'uae', 'saudi arabia',
+              'qatar', 'uk', 'england', 'france', 'germany', 'italy',
+              'spain', 'canada', 'mexico', 'brazil', 'australia',
+              'usa', 'us', 'united states', 'united kingdom']
+    cleaned = text
+    for suffix in _STRIP:
+        cleaned = cleaned.replace(suffix, '').strip().rstrip(',')
+    cleaned = cleaned.strip()
+    if cleaned and cleaned in CITY_TO_IATA:
+        return CITY_TO_IATA[cleaned]
+
+    # 4. Try each word in the input as an exact city match (longest words first)
+    words = text.replace(',', ' ').split()
+    # Try multi-word combos first ("salt lake", "new york", "los angeles")
+    for n in range(min(3, len(words)), 0, -1):
+        for i in range(len(words) - n + 1):
+            phrase = ' '.join(words[i:i+n])
+            if phrase in CITY_TO_IATA:
+                return CITY_TO_IATA[phrase]
+
+    # 5. Substring matching — longest match wins to avoid 'la' beating 'lahore'
+    best_match = None
+    best_len = 0
     for city, code in CITY_TO_IATA.items():
-        if text in city or city in text:
-            return code
-    upper = city_or_code.strip().upper()
+        if city in text and len(city) > best_len:
+            best_match = code
+            best_len = len(city)
+    if best_match:
+        return best_match
+
+    # 6. Final fallback — check if input looks like an IATA code
+    upper = raw.upper()
     if len(upper) == 3 and upper.isalpha():
         return upper
-    return city_or_code.strip()
+    return raw
 
 
 def _parse_date(date_str: str) -> str:
@@ -329,12 +371,37 @@ def _parse_date(date_str: str) -> str:
         return (now + timedelta(days=1)).strftime("%Y-%m-%d")
     if "next week" in lower:
         return (now + timedelta(days=7)).strftime("%Y-%m-%d")
-    if "next month" in lower:
+    if "next month" in lower and not re.search(r'\d+\s*month', lower):
         return (now + timedelta(days=30)).strftime("%Y-%m-%d")
     if "this week" in lower:
         return now.strftime("%Y-%m-%d")
     if "this month" in lower:
         return (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Relative phrases: "in 6 months", "6 months from now", "next 3 months",
+    # "in 2 weeks", "3 weeks from now", "in 10 days"
+    _WORD_TO_NUM = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'eleven': 11, 'twelve': 12}
+    rel = re.search(r'(?:in|next|after)\s+(\d+|' + '|'.join(_WORD_TO_NUM.keys()) + r')\s*(month|week|day)', lower)
+    if not rel:
+        rel = re.search(r'(\d+|' + '|'.join(_WORD_TO_NUM.keys()) + r')\s*(month|week|day)s?\s*(?:from\s*now|later|ahead|out)', lower)
+    if rel:
+        num_str, unit = rel.group(1), rel.group(2)
+        num = _WORD_TO_NUM.get(num_str, None)
+        if num is None:
+            try:
+                num = int(num_str)
+            except ValueError:
+                num = 1
+        if 'month' in unit:
+            result_date = now + timedelta(days=num * 30)
+        elif 'week' in unit:
+            result_date = now + timedelta(weeks=num)
+        else:
+            result_date = now + timedelta(days=num)
+        return result_date.strftime("%Y-%m-%d")
+
     import calendar
     for month_num in range(1, 13):
         month_name = calendar.month_name[month_num].lower()
