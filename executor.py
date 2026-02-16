@@ -673,6 +673,14 @@ class ToolExecutor:
         self.monitor.on_started(agent_type, task[:200], attempt)
         self.logger.info(f"🚀 Deploying {agent_type} agent (deployment {attempt}/{self.max_deployments}): {task[:100]}")
 
+        # ── Reset browser state before deployment (prevents stale tab issues) ──
+        if agent_type in ("research", "browser"):
+            try:
+                from hands.browser import _reset_page
+                _reset_page()
+            except Exception:
+                pass
+
         # ── Create and run the agent (with timeout) ──
         agent = agent_class(
             llm_client=self.llm_client,

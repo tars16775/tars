@@ -59,13 +59,38 @@
       "summary": "The cheapest flights from Salt Lake City (SLC) to Los Angeles (LAX) for the next 6 months can be found on Google Flights, with prices starting from $61 for a nonstop flight on April 16-22. Additionally, Skyscanner and Kayak can be used to compare prices and find the best deals.",
       "steps": 4,
       "timestamp": "2026-02-15T18:39:02.575475"
+    },
+    {
+      "task": "Research the cheapest flights from Salt Lake City (SLC) to Los Angeles (LAX) for the next 6 months, specifically targeting departures on Tuesdays. Check major flight aggregators like Google Flights, K",
+      "summary": "The cheapest flights from Salt Lake City (SLC) to Los Angeles (LAX) on Tuesdays for the next 6 months are priced from $61, according to Google Flights. Kayak and Skyscanner offer similar deals, with prices starting from $54 and $27, respectively.",
+      "steps": 3,
+      "timestamp": "2026-02-15T19:04:47.494600"
+    },
+    {
+      "task": "Research the cheapest flights from Salt Lake City (SLC) to Los Angeles (LAX) for the next 6 months, specifically prioritizing Tuesdays. Check Google Flights, Kayak, and Skyscanner. For each flight, ex",
+      "summary": "The cheapest flights from SLC to LAX on Tuesdays for the next 6 months are $340 on Frontier, $380 on Southwest, $662 on United, $697 on American, $758 on Delta, $759 on Delta, $857 on Delta, and $977 on Delta. The comparison table shows the price, airline, departure date, duration, and number of sto",
+      "steps": 4,
+      "timestamp": "2026-02-15T19:15:26.989841"
+    },
+    {
+      "task": "[POST-REVIEW] Research the cheapest flights from Salt Lake City (SLC) to Los Angeles (LAX) for the next 6 months, specifically prioritizing Tuesdays. Check Google Flights, Kayak, and Skyscanner. For e",
+      "summary": "The agent task execution failed due to a timeout after 300 seconds, indicating that the task was too complex for a single agent deployment. To improve, the task should be broken down into smaller, manageable steps, such as researching flights on one website at a time. By doing so, the agent can proc",
+      "steps": 0,
+      "timestamp": "2026-02-15T19:26:21.304104"
     }
   ],
-  "failure_patterns": [],
+  "failure_patterns": [
+    {
+      "task": "Research the cheapest flights from Salt Lake City (SLC) to Los Angeles (LAX) for the next 6 months, specifically prioritizing Tuesdays. Check Google Flights, Kayak, and Skyscanner. For each flight, ex",
+      "reason": "Timed out after 300s",
+      "steps": 0,
+      "timestamp": "2026-02-15T19:26:20.845162"
+    }
+  ],
   "stats": {
-    "total_tasks": 10,
-    "successes": 10,
-    "failures": 0,
-    "total_steps": 51
+    "total_tasks": 14,
+    "successes": 13,
+    "failures": 1,
+    "total_steps": 58
   }
 }

@@ -498,7 +498,9 @@ def _run_with_auto_restart():
             break
         except Exception as e:
             restart_count += 1
+            import traceback
             print(f"\n  💥 TARS CRASHED: {e}")
+            traceback.print_exc()
             print(f"  🔄 Auto-restart {restart_count}/{max_restarts} in 5s...\n")
 
             # Try to notify owner about the crash

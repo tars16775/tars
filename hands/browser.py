@@ -77,8 +77,15 @@ def _auto_handle_dialogs():
             pass
 
 
+_consecutive_timeouts = 0  # Track repeated CDP timeouts
+
 def _js(code):
-    """Execute JavaScript in the active tab. Returns string result."""
+    """Execute JavaScript in the active tab. Returns string result.
+    
+    On CDP timeout: navigates to about:blank to unstick the browser.
+    After 3+ consecutive timeouts: forces full CDP reconnect.
+    """
+    global _cdp, _consecutive_timeouts
     _ensure()
     try:
         r = _cdp.send("Runtime.evaluate", {
@@ -86,6 +93,7 @@ def _js(code):
             "returnByValue": True,
             "awaitPromise": False,
         })
+        _consecutive_timeouts = 0  # Reset on success
         if r.get("exceptionDetails"):
             exc = r["exceptionDetails"]
             text = exc.get("text", "")
@@ -99,8 +107,58 @@ def _js(code):
         if isinstance(val, (dict, list)):
             return json.dumps(val)
         return str(val)
+    except TimeoutError as e:
+        _consecutive_timeouts += 1
+        print(f"    ⚠️ CDP timeout #{_consecutive_timeouts}: {str(e)[:80]}")
+        # Try to unstick the browser by navigating to a blank page
+        try:
+            if _consecutive_timeouts >= 3:
+                # Force full reconnect after 3+ consecutive timeouts
+                print(f"    🔄 Forcing CDP reconnect after {_consecutive_timeouts} consecutive timeouts")
+                if _cdp:
+                    try:
+                        _cdp.connected = False
+                    except Exception:
+                        pass
+                    _cdp = None
+                _cdp = CDP()
+                _cdp.ensure_connected()
+                # Navigate to blank page to start clean
+                _cdp.send("Page.navigate", {"url": "about:blank"})
+                time.sleep(1)
+                _consecutive_timeouts = 0
+            else:
+                # Try navigating to about:blank to unstick
+                _cdp.send("Page.navigate", {"url": "about:blank"}, timeout=10)
+                time.sleep(1)
+        except Exception:
+            pass
+        return f"JS_ERROR: CDP timeout after 30s: {str(e)[:60]}"
     except Exception as e:
+        _consecutive_timeouts += 1
+        if _consecutive_timeouts >= 3:
+            # Force reconnect on repeated failures
+            print(f"    🔄 Forcing CDP reconnect after {_consecutive_timeouts} consecutive errors")
+            if _cdp:
+                try:
+                    _cdp.connected = False
+                except Exception:
+                    pass
+                _cdp = None
+            _consecutive_timeouts = 0
         return f"JS_ERROR: {e}"
+
+
+def _reset_page():
+    """Navigate to about:blank and clear state. Call between agent deployments."""
+    global _consecutive_timeouts
+    _consecutive_timeouts = 0
+    try:
+        _ensure()
+        _cdp.send("Page.navigate", {"url": "about:blank"}, timeout=10)
+        time.sleep(0.5)
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════════

@@ -27,6 +27,23 @@ import math
 from datetime import datetime, timedelta
 
 
+def _navigate(url):
+    """Navigate to URL with CDP fallback if JS navigation times out.
+    
+    First tries JS navigation (window.location.href). If that hits a CDP 
+    timeout (e.g., browser stuck on heavy JS page), falls back to CDP 
+    Page.navigate which works even when the JS runtime is unresponsive.
+    """
+    safe_url = url.replace("'", "\\'")
+    result = _js(f"window.location.href='{safe_url}'")
+    if result and "JS_ERROR" in result:
+        try:
+            import hands.browser as _bmod
+            _bmod._cdp.send("Page.navigate", {"url": url}, timeout=15)
+        except Exception:
+            pass
+
+
 # =============================================
 #  Phase 3: Source credibility scoring
 # =============================================
@@ -739,7 +756,8 @@ class ResearchAgent(BaseAgent):
                 _ensure()
                 encoded = urllib.parse.quote_plus(query)
                 num = min(num_results, 30)
-                _js(f"window.location.href='https://www.google.com/search?q={encoded}&num={num}'")
+                search_url = f"https://www.google.com/search?q={encoded}&num={num}"
+                _navigate(search_url)
                 _time.sleep(3)
 
                 # Strategy 1: Multiple CSS selectors (Google changes these frequently)
@@ -899,8 +917,7 @@ class ResearchAgent(BaseAgent):
         try:
             with _browser_lock:
                 _ensure()
-                safe_url = url.replace("'", "\\'")
-                _js(f"window.location.href='{safe_url}'")
+                _navigate(url)
                 _time.sleep(2.5)
 
                 text = _js(
@@ -950,8 +967,7 @@ class ResearchAgent(BaseAgent):
         try:
             with _browser_lock:
                 _ensure()
-                safe_url = url.replace("'", "\\'")
-                _js(f"window.location.href='{safe_url}'")
+                _navigate(url)
                 _time.sleep(3)
 
                 title = _js("document.title || ''") or ""
@@ -1025,8 +1041,7 @@ class ResearchAgent(BaseAgent):
         try:
             with _browser_lock:
                 _ensure()
-                safe_url = url.replace("'", "\\'")
-                _js(f"window.location.href='{safe_url}'")
+                _navigate(url)
                 _time.sleep(2.5)
                 text = _js(
                     "(function() {"
@@ -1071,8 +1086,7 @@ class ResearchAgent(BaseAgent):
         try:
             with _browser_lock:
                 _ensure()
-                safe_url = url.replace("'", "\\'")
-                _js(f"window.location.href='{safe_url}'")
+                _navigate(url)
                 _time.sleep(2.5)
 
                 tables_js = (
@@ -1175,8 +1189,7 @@ class ResearchAgent(BaseAgent):
         try:
             with _browser_lock:
                 _ensure()
-                safe_url = url.replace("'", "\\'")
-                _js(f"window.location.href='{safe_url}'")
+                _navigate(url)
                 _time.sleep(2.5)
 
                 safe_pattern = link_pattern.replace("'", "\\'").replace("\\", "\\\\")
@@ -1226,8 +1239,7 @@ class ResearchAgent(BaseAgent):
                 try:
                     with _browser_lock:
                         _ensure()
-                        safe_link = link["url"].replace("'", "\\'")
-                        _js(f"window.location.href='{safe_link}'")
+                        _navigate(link["url"])
                         _time.sleep(2)
                         text = _js(
                             "(function() {"
