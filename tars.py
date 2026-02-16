@@ -225,6 +225,14 @@ class TARS:
             self._last_snapshot = {}
             print(f"  ⚠️ Snapshot skipped: {e}")
 
+        # Start flight price tracker scheduler (background)
+        try:
+            from hands.flight_search import start_price_tracker_scheduler
+            start_price_tracker_scheduler(check_interval_minutes=30)
+            print("  ✈️  Flight price tracker scheduler started (every 30min)")
+        except Exception as e:
+            print(f"  ⚠️  Price tracker scheduler skipped: {e}")
+
         # Start task worker thread (processes queue serially)
         worker = threading.Thread(target=self._task_worker, daemon=True)
         worker.start()

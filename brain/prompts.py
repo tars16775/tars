@@ -300,6 +300,17 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 **Data-only (no report):**
   → `search_flights` — returns raw data if you need to process it further
 
+**Price Tracking (monitor and alert when price drops):**
+  → `track_flight_price` — sets up a persistent tracker that monitors prices
+  → When price ≤ target → sends beautiful HTML email alert + iMessage with booking link
+  → Example: track_flight_price({{"origin": "SLC", "destination": "NYC", "depart_date": "March 15", "target_price": 200, "email_to": "user@gmail.com"}})
+  → Use when user says "track", "monitor", "alert me when price drops", "notify me when under $X"
+
+**Managing Trackers:**
+  → `get_tracked_flights` — shows all active trackers with last price + trend
+  → `stop_tracking` — stops a tracker by ID (e.g., "SLC-NYC-20260315")
+  → Use when user asks "what am I tracking?", "stop tracking", "cancel alert"
+
 NEVER deploy browser_agent for flight searches — these tools handle it directly.
 NEVER deploy research_agent for flight price searches — it will try Kayak/Skyscanner which block bots.
 ⚠️ BANNED SITES: Kayak, Skyscanner, Expedia, Booking.com — they ALL detect automated browsing and serve CAPTCHAs.

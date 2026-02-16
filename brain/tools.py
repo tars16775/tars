@@ -375,6 +375,50 @@ TARS_TOOLS = [
     },
 
     # ═══════════════════════════════════════
+    #  Flight Price Tracker
+    # ═══════════════════════════════════════
+    {
+        "name": "track_flight_price",
+        "description": "Set up a persistent price tracker for a flight route. TARS will monitor the price on Google Flights at regular intervals and send a beautiful HTML email alert + iMessage when the price drops to or below your target.\n\nUSE THIS when user says:\n- 'Track flights from SLC to NYC and alert me when it drops below $200'\n- 'Monitor TPA to LAX price, notify me under $150'\n- 'Set a price alert for my trip'\n\nThe tracker runs in the background and checks every N hours (default 6).\nAlerts include a direct booking link.\n\nExamples:\n  track_flight_price(origin='SLC', destination='NYC', depart_date='March 15', target_price=200)\n  track_flight_price(origin='TPA', destination='LAX', depart_date='June 1', return_date='June 10', target_price=150, email_to='user@gmail.com')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Departure city or airport code"},
+                "destination": {"type": "string", "description": "Arrival city or airport code"},
+                "depart_date": {"type": "string", "description": "Departure date"},
+                "target_price": {"type": "integer", "description": "Target price in USD — alert triggers when price ≤ this"},
+                "return_date": {"type": "string", "description": "Return date (optional)"},
+                "trip_type": {"type": "string", "enum": ["round_trip", "one_way"], "default": "round_trip"},
+                "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"], "default": "economy"},
+                "stops": {"type": "string", "enum": ["any", "nonstop", "1stop"], "default": "any"},
+                "email_to": {"type": "string", "description": "Email for alerts (default: tarsitgroup@outlook.com)", "default": "tarsitgroup@outlook.com"},
+                "check_interval_hours": {"type": "integer", "description": "Hours between price checks (default 6)", "default": 6}
+            },
+            "required": ["origin", "destination", "depart_date", "target_price"]
+        }
+    },
+    {
+        "name": "get_tracked_flights",
+        "description": "List all active flight price trackers with their current status, last price, and price history trend.\n\nUSE THIS when user says:\n- 'What flights am I tracking?'\n- 'Show my price trackers'\n- 'Status of my flight alerts'",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "stop_tracking",
+        "description": "Stop/deactivate a specific flight price tracker by its ID.\n\nUSE THIS when user says:\n- 'Stop tracking SLC-NYC-20260315'\n- 'Cancel my flight tracker'\n- 'Remove the price alert for...'",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tracker_id": {"type": "string", "description": "The tracker ID to stop (e.g., 'SLC-NYC-20260315')"}
+            },
+            "required": ["tracker_id"]
+        }
+    },
+
+    # ═══════════════════════════════════════
     #  Report Generation
     # ═══════════════════════════════════════
     {

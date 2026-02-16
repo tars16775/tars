@@ -223,6 +223,20 @@ class ToolExecutor:
         elif tool_name == "mac_system":
             return self._mac_system(inp)
 
+        # ─── Smart Services (API-first) ──
+        elif tool_name == "search_flights":
+            return self._search_flights(inp)
+        elif tool_name == "search_flights_report":
+            return self._search_flights_report(inp)
+        elif tool_name == "find_cheapest_dates":
+            return self._find_cheapest_dates(inp)
+        elif tool_name == "track_flight_price":
+            return self._track_flight_price(inp)
+        elif tool_name == "get_tracked_flights":
+            return self._get_tracked_flights(inp)
+        elif tool_name == "stop_tracking":
+            return self._stop_tracking(inp)
+
         # ─── Report Generation ──
         elif tool_name == "generate_report":
             return self._generate_report(inp)
@@ -599,6 +613,113 @@ class ToolExecutor:
             return {"success": False, "error": True, "content": f"Unknown system action: {action}"}
         except Exception as e:
             return {"success": False, "error": True, "content": f"System error: {e}"}
+
+    def _search_flights(self, inp):
+        """Handle search_flights brain tool — API-first flight search."""
+        try:
+            from hands.flight_search import search_flights
+            event_bus.emit("tool_start", {"tool": "search_flights", "input": inp})
+            result = search_flights(
+                origin=inp["origin"],
+                destination=inp["destination"],
+                depart_date=inp["depart_date"],
+                return_date=inp.get("return_date", ""),
+                passengers=inp.get("passengers", 1),
+                trip_type=inp.get("trip_type", "round_trip"),
+                cabin=inp.get("cabin", "economy"),
+                stops=inp.get("stops", "any"),
+                max_price=inp.get("max_price", 0),
+            )
+            event_bus.emit("tool_end", {"tool": "search_flights", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Flight search error: {e}"}
+
+    def _search_flights_report(self, inp):
+        """Handle search_flights_report — search + Excel + email pipeline."""
+        try:
+            from hands.flight_search import search_flights_report
+            event_bus.emit("tool_start", {"tool": "search_flights_report", "input": inp})
+            result = search_flights_report(
+                origin=inp["origin"],
+                destination=inp["destination"],
+                depart_date=inp["depart_date"],
+                return_date=inp.get("return_date", ""),
+                passengers=inp.get("passengers", 1),
+                trip_type=inp.get("trip_type", "round_trip"),
+                cabin=inp.get("cabin", "economy"),
+                stops=inp.get("stops", "any"),
+                max_price=inp.get("max_price", 0),
+                email_to=inp.get("email_to", ""),
+            )
+            event_bus.emit("tool_end", {"tool": "search_flights_report", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Flight report error: {e}"}
+
+    def _find_cheapest_dates(self, inp):
+        """Handle find_cheapest_dates — scan date range for cheapest flight."""
+        try:
+            from hands.flight_search import find_cheapest_dates
+            event_bus.emit("tool_start", {"tool": "find_cheapest_dates", "input": inp})
+            result = find_cheapest_dates(
+                origin=inp["origin"],
+                destination=inp["destination"],
+                start_date=inp["start_date"],
+                end_date=inp.get("end_date", ""),
+                trip_type=inp.get("trip_type", "one_way"),
+                cabin=inp.get("cabin", "economy"),
+                stops=inp.get("stops", "any"),
+                email_to=inp.get("email_to", ""),
+            )
+            event_bus.emit("tool_end", {"tool": "find_cheapest_dates", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Cheapest dates error: {e}"}
+
+    def _track_flight_price(self, inp):
+        """Handle track_flight_price — set up a price tracker for a route."""
+        try:
+            from hands.flight_search import track_flight_price
+            event_bus.emit("tool_start", {"tool": "track_flight_price", "input": inp})
+            result = track_flight_price(
+                origin=inp["origin"],
+                destination=inp["destination"],
+                depart_date=inp["depart_date"],
+                target_price=inp["target_price"],
+                return_date=inp.get("return_date", ""),
+                trip_type=inp.get("trip_type", "round_trip"),
+                cabin=inp.get("cabin", "economy"),
+                stops=inp.get("stops", "any"),
+                email_to=inp.get("email_to", "tarsitgroup@outlook.com"),
+                check_interval_hours=inp.get("check_interval_hours", 6),
+            )
+            event_bus.emit("tool_end", {"tool": "track_flight_price", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Price tracker error: {e}"}
+
+    def _get_tracked_flights(self, inp):
+        """Handle get_tracked_flights — list all active price trackers."""
+        try:
+            from hands.flight_search import get_tracked_flights
+            event_bus.emit("tool_start", {"tool": "get_tracked_flights", "input": inp})
+            result = get_tracked_flights()
+            event_bus.emit("tool_end", {"tool": "get_tracked_flights", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Get trackers error: {e}"}
+
+    def _stop_tracking(self, inp):
+        """Handle stop_tracking — deactivate a specific price tracker."""
+        try:
+            from hands.flight_search import stop_tracking
+            event_bus.emit("tool_start", {"tool": "stop_tracking", "input": inp})
+            result = stop_tracking(tracker_id=inp["tracker_id"])
+            event_bus.emit("tool_end", {"tool": "stop_tracking", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Stop tracking error: {e}"}
 
     def _generate_report(self, inp):
         """Handle generate_report brain tool — create Excel/PDF/CSV reports."""
