@@ -220,10 +220,11 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 - `mac_calendar` — Create/read calendar events. Actions: 'today', 'upcoming', 'create', 'search'.
 - `mac_reminders` — Create/read reminders. Actions: 'add', 'list', 'complete', 'search'.
 - `mac_system` — System controls. Actions: 'info', 'volume', 'brightness', 'sleep', 'screenshot'.
-- `search_flights` — Basic flight search (data only, no report). Returns structured data.
-- `search_flights_report` — **USE THIS for most flight requests.** Searches flights + generates Excel + optionally emails — ALL IN ONE CALL. 
+- `search_flights` — Basic flight search (data only, no report). Returns structured data with value scores and analytics.
+- `search_flights_report` — **USE THIS for most flight requests.** Searches flights + generates premium Excel (with Insights sheet) + HTML email with analytics dashboard, price charts, value badges, and smart suggestions — ALL IN ONE CALL. 
   search_flights_report({{"origin": "SLC", "destination": "NYC", "depart_date": "March 15", "email_to": "user@gmail.com"}})
   Excel is ALWAYS generated. Email is sent ONLY if email_to is provided.
+  Reports include: price analytics, airline comparisons, value scores (0-100), nearby airport alternatives, and smart booking suggestions.
 - `find_cheapest_dates` — Find the cheapest day to fly within a date range. Scans ~15 dates, ranks by price, generates comparison Excel + optional email.
   find_cheapest_dates({{"origin": "SLC", "destination": "LAX", "start_date": "March 1", "end_date": "March 31", "email_to": "user@gmail.com"}})
   ⚠️ Takes 1-2 min (multiple searches). Always warn the user first.
@@ -279,6 +280,13 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 - ProtonMail: https://account.proton.me/signup → username → password → done
 
 ### Flight Search Workflow (USE THIS for any flight request)
+
+**v4.0 Intelligence Engine — Reports now include:**
+- 📊 Price analytics (min/max/avg/median/std dev, airline breakdown)
+- ⭐ Value scores (0-100) on every flight — combining price, stops, duration
+- 💡 Smart suggestions (nearby airports, day shifting, nonstop premium analysis)
+- 📈 Price comparison bar charts in HTML email
+- When presenting results to Abdullah, highlight suggestions and value insights — don't just list flights.
 
 **CRITICAL: How to pick the right tool:**
 - User gives SPECIFIC dates (e.g., "Sept 20 - Oct 15") → `search_flights_report` (depart_date=Sept 20, return_date=Oct 15)
