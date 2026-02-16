@@ -275,7 +275,13 @@ class TARSBrain:
                 error_type = type(e).__name__
                 print(f"  ⚠️ Brain streaming error ({error_type}): {error_str[:200]}")
 
-                # Try to recover from Groq tool_use_failed
+                # ── Non-retryable: API key / permission errors ──
+                if "API key expired" in error_str or "PERMISSION_DENIED" in error_str:
+                    event_bus.emit("error", {"message": f"API key error: {error_str[:200]}"})
+                    self._emergency_notify(error_str)
+                    return f"❌ LLM API error: {e}"
+
+                # ── Groq tool_use_failed: try to recover the malformed call ──
                 if "tool_use_failed" in error_str:
                     recovered = _parse_failed_tool_call(e)
                     if recovered:
@@ -286,8 +292,72 @@ class TARSBrain:
                             "tokens_out": 0, "duration": call_duration,
                         })
                         print(f"  🔧 Brain: Recovered malformed tool call")
+                        # Skip the retry loop below — we have a valid response
+                        pass  # fall through to "Process response" section
                     else:
-                        # Recovery failed — try non-streaming fallback
+                        # tool_use_failed but couldn't parse — fall through to retry
+                        error_str = str(e)  # keep for retry logic
+                        response = None
+                else:
+                    response = None
+
+                # ── Retryable errors: rate limit, 5xx, transient ──
+                if response is None:
+                    _retryable_markers = (
+                        "rate_limit", "rate limit", "429",
+                        "500", "502", "503", "529",
+                        "overloaded", "capacity", "resource_exhausted",
+                        "connection", "timeout", "timed out",
+                        "service unavailable", "internal server error",
+                        "tool_use_failed",
+                    )
+                    is_retryable = any(m in error_str.lower() for m in _retryable_markers)
+
+                    if is_retryable:
+                        # Retry with exponential backoff (non-streaming fallback)
+                        max_api_retries = 5
+                        for api_attempt in range(1, max_api_retries + 1):
+                            import random as _rand
+                            # Longer waits for rate limits
+                            if any(m in error_str.lower() for m in ("rate_limit", "rate limit", "429", "resource_exhausted")):
+                                base, cap = 3.0, 90.0
+                            else:
+                                base, cap = 1.0, 30.0
+                            delay = min(cap, base * (2 ** api_attempt)) * _rand.uniform(0.5, 1.0)
+                            print(f"  ⏳ Retry {api_attempt}/{max_api_retries} in {delay:.1f}s ({error_type})")
+                            event_bus.emit("status_change", {"status": "waiting", "label": f"RATE LIMITED — retry in {int(delay)}s"})
+                            time.sleep(delay)
+
+                            try:
+                                # Try non-streaming (more reliable under load)
+                                response = self.client.create(
+                                    model=model,
+                                    max_tokens=8192,
+                                    system=self._get_system_prompt(),
+                                    tools=TARS_TOOLS,
+                                    messages=self.conversation_history,
+                                )
+                                call_duration = time.time() - call_start
+                                event_bus.emit("api_call", {
+                                    "model": model,
+                                    "tokens_in": response.usage.input_tokens,
+                                    "tokens_out": response.usage.output_tokens,
+                                    "duration": call_duration,
+                                })
+                                print(f"  ✅ Brain: Retry {api_attempt} succeeded (non-streaming)")
+                                event_bus.emit("status_change", {"status": "online", "label": "THINKING"})
+                                break  # Success!
+                            except Exception as retry_e:
+                                error_str = str(retry_e)
+                                error_type = type(retry_e).__name__
+                                print(f"  ⚠️ Retry {api_attempt} failed: {error_str[:150]}")
+                                if api_attempt == max_api_retries:
+                                    event_bus.emit("error", {"message": f"LLM API error after {max_api_retries} retries: {retry_e}"})
+                                    self._emergency_notify(str(retry_e))
+                                    return f"❌ LLM API error after {max_api_retries} retries: {retry_e}"
+                    else:
+                        # Non-retryable, non-key error — try one non-streaming fallback
+                        print(f"  🔧 Brain: Trying non-streaming fallback...")
                         try:
                             response = self.client.create(
                                 model=model,
@@ -308,37 +378,6 @@ class TARSBrain:
                             event_bus.emit("error", {"message": f"LLM API error: {e2}"})
                             self._emergency_notify(str(e2))
                             return f"❌ LLM API error: {e2}"
-
-                elif "API key expired" in error_str or "PERMISSION_DENIED" in error_str:
-                    # API key issue — don't retry, tell user immediately
-                    event_bus.emit("error", {"message": f"API key error: {error_str[:200]}"})
-                    self._emergency_notify(error_str)
-                    return f"❌ LLM API error: {e}"
-
-                else:
-                    # For any other error (KeyError, streaming parse, etc.)
-                    # Try non-streaming fallback before giving up
-                    print(f"  🔧 Brain: Trying non-streaming fallback...")
-                    try:
-                        response = self.client.create(
-                            model=model,
-                            max_tokens=8192,
-                            system=self._get_system_prompt(),
-                            tools=TARS_TOOLS,
-                            messages=self.conversation_history,
-                        )
-                        call_duration = time.time() - call_start
-                        event_bus.emit("api_call", {
-                            "model": model,
-                            "tokens_in": response.usage.input_tokens,
-                            "tokens_out": response.usage.output_tokens,
-                            "duration": call_duration,
-                        })
-                        print(f"  🔧 Brain: Non-streaming fallback succeeded")
-                    except Exception as e2:
-                        event_bus.emit("error", {"message": f"LLM API error: {e2}"})
-                        self._emergency_notify(str(e2))
-                        return f"❌ LLM API error: {e2}"
 
             # Process response
             assistant_content = response.content

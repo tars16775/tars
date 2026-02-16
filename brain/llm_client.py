@@ -442,6 +442,97 @@ class _Delta:
 
 
 # ─────────────────────────────────────────────
+#  Retry-Aware Stream Wrapper
+#  (Retries the ENTIRE streaming request on
+#   rate limits, 5xx, connection errors)
+# ─────────────────────────────────────────────
+
+class RetryStreamWrapper:
+    """
+    Wraps OpenAIStreamWrapper with automatic retry on transient errors.
+    
+    On rate limit (429), server error (5xx), or connection error:
+      - Waits with exponential backoff + jitter
+      - Retries the full streaming request
+      - Up to max_retries attempts
+    
+    From the caller's perspective, this is transparent — same
+    context-manager + iterator interface as OpenAIStreamWrapper.
+    """
+    def __init__(self, client, backoff_fn, max_retries=5, **kwargs):
+        self._client = client
+        self._kwargs = kwargs
+        self._backoff_fn = backoff_fn
+        self._max_retries = max_retries
+        self._inner = None
+
+    def __enter__(self):
+        last_error = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                self._inner = OpenAIStreamWrapper(self._client, **self._kwargs)
+                self._inner.__enter__()
+                # Wrap iteration to catch mid-stream errors
+                self._inner._retry_attempt = attempt
+                return self
+            except Exception as e:
+                last_error = e
+                if self._is_retryable(e) and attempt < self._max_retries:
+                    delay = self._get_delay(e, attempt)
+                    print(f"    ⏳ Stream error ({type(e).__name__}) — retry {attempt}/{self._max_retries} in {delay:.1f}s")
+                    _time.sleep(delay)
+                    continue
+                raise
+        raise last_error
+
+    def __exit__(self, *args):
+        if self._inner:
+            self._inner.__exit__(*args)
+
+    def __iter__(self):
+        """Iterate over stream events, retrying on mid-stream failures."""
+        try:
+            yield from self._inner
+        except Exception as e:
+            if self._is_retryable(e):
+                attempt = getattr(self._inner, '_retry_attempt', 1)
+                if attempt < self._max_retries:
+                    delay = self._get_delay(e, attempt)
+                    print(f"    ⏳ Mid-stream error ({type(e).__name__}) — retry {attempt}/{self._max_retries} in {delay:.1f}s")
+                    _time.sleep(delay)
+                    # Restart the stream from scratch
+                    self._inner = OpenAIStreamWrapper(self._client, **self._kwargs)
+                    self._inner.__enter__()
+                    self._inner._retry_attempt = attempt + 1
+                    yield from self._inner
+                    return
+            raise
+
+    def get_final_message(self):
+        return self._inner.get_final_message()
+
+    def _is_retryable(self, error):
+        """Check if an error is transient and worth retrying."""
+        error_str = str(error).lower()
+        return any(marker in error_str for marker in (
+            "rate_limit", "rate limit", "429",
+            "500", "502", "503", "529",
+            "overloaded", "capacity", "resource_exhausted",
+            "connection", "timeout", "timed out",
+            "service unavailable", "internal server error",
+        ))
+
+    def _get_delay(self, error, attempt):
+        """Get appropriate delay based on error type."""
+        error_str = str(error).lower()
+        # Rate limits need longer waits
+        if any(m in error_str for m in ("rate_limit", "rate limit", "429", "resource_exhausted")):
+            return self._backoff_fn(attempt, base=2.0, cap=90.0)
+        # Server errors — shorter waits
+        return self._backoff_fn(attempt, base=1.0, cap=30.0)
+
+
+# ─────────────────────────────────────────────
 #  Main LLM Client
 # ─────────────────────────────────────────────
 
@@ -565,6 +656,9 @@ class LLMClient:
         
         temperature=None lets the provider use its default for brain streaming
         (slightly creative for conversation, but structured for tool calls).
+        
+        Wraps in RetryStreamWrapper so rate limits, 5xx, and transient errors
+        are automatically retried with exponential backoff (up to 5 attempts).
         """
         if self._mode == "anthropic":
             kwargs = dict(
@@ -588,7 +682,7 @@ class LLMClient:
             )
             if temperature is not None:
                 kwargs["temperature"] = temperature
-            return OpenAIStreamWrapper(self._client, **kwargs)
+            return RetryStreamWrapper(self._client, self._backoff_delay, **kwargs)
 
     # ── Helper ──
 

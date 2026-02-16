@@ -338,17 +338,19 @@ class TARS:
 
                 # ── Safety net: if brain returned an error, notify user ──
                 if response and (response.startswith("❌") or response.startswith("⚠️")):
-                    self.logger.warning(f"Brain returned error, notifying user: {response[:200]}")
+                    self.logger.warning(f"Brain returned error: {response[:200]}")
+                    # Brain's _emergency_notify already sent rate-limit/key messages.
+                    # Only notify for errors the brain DIDN'T already handle.
                     try:
-                        # Extract useful info from the error
-                        if "leaked" in response.lower() or "PERMISSION_DENIED" in response:
-                            self.imessage_sender.send("❌ API key issue — my brain API key needs to be replaced. Let me know when you've updated config.yaml and I'll retry.")
-                        elif "rate limit" in response.lower() or "429" in response:
-                            self.imessage_sender.send("⏳ Hit a rate limit. Give me a minute and send your request again.")
-                        elif "Failed to call a function" in response:
-                            self.imessage_sender.send("⚠️ Had a formatting hiccup with my response. Can you repeat your request? I'll get it right this time.")
-                        else:
-                            self.imessage_sender.send(f"⚠️ Ran into an issue: {response[:300]}")
+                        already_notified = any(m in response.lower() for m in (
+                            "rate limit", "429", "retries",
+                            "api key", "permission_denied", "leaked",
+                        ))
+                        if not already_notified:
+                            if "Failed to call a function" in response:
+                                self.imessage_sender.send("⚠️ Had a formatting hiccup with my response. Can you repeat your request? I'll get it right this time.")
+                            else:
+                                self.imessage_sender.send(f"⚠️ Ran into an issue: {response[:300]}")
                     except Exception:
                         pass  # Don't crash the loop trying to send error notification
 
