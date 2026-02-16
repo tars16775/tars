@@ -57,6 +57,24 @@ class TARSBrain:
             self.brain_model = llm_cfg["heavy_model"]
             print(f"  🧠 Brain: {llm_cfg['provider']}/{self.brain_model} (single-provider mode)")
 
+        # ── Provider failover setup ──
+        # When the primary brain hits rate limits, failover to this provider
+        self._primary_client = self.client
+        self._primary_model = self.brain_model
+        self._fallback_client = None
+        self._fallback_model = None
+        self._using_fallback = False
+
+        fb_cfg = config.get("fallback_llm")
+        if fb_cfg and fb_cfg.get("api_key"):
+            self._fallback_client = LLMClient(
+                provider=fb_cfg["provider"],
+                api_key=fb_cfg["api_key"],
+                base_url=fb_cfg.get("base_url"),
+            )
+            self._fallback_model = fb_cfg["model"]
+            print(f"  🔄 Fallback: {fb_cfg['provider']}/{self._fallback_model}")
+
         # Keep legacy references for executor compatibility
         self.heavy_model = llm_cfg.get("heavy_model", llm_cfg.get("model", ""))
         self.fast_model = llm_cfg.get("fast_model", self.heavy_model)
@@ -198,6 +216,13 @@ class TARSBrain:
         Messages within 10 min are part of the same conversation.
         After 10 min idle, context is soft-reset (compacted, not wiped).
         """
+        # ── Restore primary provider if we failed over previously ──
+        if self._using_fallback and self._primary_client:
+            self._using_fallback = False
+            self.client = self._primary_client
+            self.brain_model = self._primary_model
+            print(f"  🔄 Restored primary brain: {self._primary_model}")
+
         model = self.brain_model
         event_bus.emit("thinking_start", {"model": model})
         
@@ -314,22 +339,17 @@ class TARSBrain:
                     is_retryable = any(m in error_str.lower() for m in _retryable_markers)
 
                     if is_retryable:
-                        # Retry with exponential backoff (non-streaming fallback)
-                        max_api_retries = 5
-                        for api_attempt in range(1, max_api_retries + 1):
-                            import random as _rand
-                            # Longer waits for rate limits
-                            if any(m in error_str.lower() for m in ("rate_limit", "rate limit", "429", "resource_exhausted")):
-                                base, cap = 3.0, 90.0
-                            else:
-                                base, cap = 1.0, 30.0
-                            delay = min(cap, base * (2 ** api_attempt)) * _rand.uniform(0.5, 1.0)
-                            print(f"  ⏳ Retry {api_attempt}/{max_api_retries} in {delay:.1f}s ({error_type})")
-                            event_bus.emit("status_change", {"status": "waiting", "label": f"RATE LIMITED — retry in {int(delay)}s"})
-                            time.sleep(delay)
+                        is_rate_limit = any(m in error_str.lower() for m in ("rate_limit", "rate limit", "429", "resource_exhausted"))
 
+                        # ── Strategy 1: Provider failover (instant, no wait) ──
+                        if is_rate_limit and self._fallback_client and not self._using_fallback:
+                            self._using_fallback = True
+                            self.client = self._fallback_client
+                            model = self._fallback_model
+                            self.brain_model = model
+                            print(f"  🔄 FAILOVER: Switching brain to {model} (rate limited on primary)")
+                            event_bus.emit("status_change", {"status": "online", "label": f"FAILOVER → {model}"})
                             try:
-                                # Try non-streaming (more reliable under load)
                                 response = self.client.create(
                                     model=model,
                                     max_tokens=8192,
@@ -344,17 +364,62 @@ class TARSBrain:
                                     "tokens_out": response.usage.output_tokens,
                                     "duration": call_duration,
                                 })
-                                print(f"  ✅ Brain: Retry {api_attempt} succeeded (non-streaming)")
-                                event_bus.emit("status_change", {"status": "online", "label": "THINKING"})
-                                break  # Success!
-                            except Exception as retry_e:
-                                error_str = str(retry_e)
-                                error_type = type(retry_e).__name__
-                                print(f"  ⚠️ Retry {api_attempt} failed: {error_str[:150]}")
-                                if api_attempt == max_api_retries:
-                                    event_bus.emit("error", {"message": f"LLM API error after {max_api_retries} retries: {retry_e}"})
-                                    self._emergency_notify(str(retry_e))
-                                    return f"❌ LLM API error after {max_api_retries} retries: {retry_e}"
+                                print(f"  ✅ Fallback provider succeeded: {model}")
+                            except Exception as fb_e:
+                                print(f"  ⚠️ Fallback also failed: {fb_e}")
+                                # Both providers down — fall through to retry loop
+                                response = None
+
+                        # ── Strategy 2: Retry with backoff (same or fallback provider) ──
+                        if response is None:
+                            max_api_retries = 5
+                            for api_attempt in range(1, max_api_retries + 1):
+                                import random as _rand
+                                if is_rate_limit:
+                                    base, cap = 3.0, 90.0
+                                else:
+                                    base, cap = 1.0, 30.0
+                                delay = min(cap, base * (2 ** api_attempt)) * _rand.uniform(0.5, 1.0)
+                                print(f"  ⏳ Retry {api_attempt}/{max_api_retries} in {delay:.1f}s ({error_type})")
+                                event_bus.emit("status_change", {"status": "waiting", "label": f"RATE LIMITED — retry in {int(delay)}s"})
+                                time.sleep(delay)
+
+                                try:
+                                    response = self.client.create(
+                                        model=model,
+                                        max_tokens=8192,
+                                        system=self._get_system_prompt(),
+                                        tools=TARS_TOOLS,
+                                        messages=self.conversation_history,
+                                    )
+                                    call_duration = time.time() - call_start
+                                    event_bus.emit("api_call", {
+                                        "model": model,
+                                        "tokens_in": response.usage.input_tokens,
+                                        "tokens_out": response.usage.output_tokens,
+                                        "duration": call_duration,
+                                    })
+                                    print(f"  ✅ Retry {api_attempt} succeeded")
+                                    event_bus.emit("status_change", {"status": "online", "label": "THINKING"})
+                                    break
+                                except Exception as retry_e:
+                                    error_str = str(retry_e)
+                                    error_type = type(retry_e).__name__
+                                    print(f"  ⚠️ Retry {api_attempt} failed: {error_str[:150]}")
+
+                                    # Mid-retry failover: if primary is still rate limited, try fallback
+                                    if api_attempt == 2 and self._fallback_client and not self._using_fallback:
+                                        self._using_fallback = True
+                                        self.client = self._fallback_client
+                                        model = self._fallback_model
+                                        self.brain_model = model
+                                        print(f"  🔄 FAILOVER (mid-retry): Switching to {model}")
+                                        event_bus.emit("status_change", {"status": "online", "label": f"FAILOVER → {model}"})
+
+                                    if api_attempt == max_api_retries:
+                                        event_bus.emit("error", {"message": f"LLM API error after {max_api_retries} retries: {retry_e}"})
+                                        self._emergency_notify(str(retry_e))
+                                        return f"❌ LLM API error after {max_api_retries} retries: {retry_e}"
                     else:
                         # Non-retryable, non-key error — try one non-streaming fallback
                         print(f"  🔧 Brain: Trying non-streaming fallback...")
