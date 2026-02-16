@@ -1,13 +1,15 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║      TARS — Brain: Orchestrator Tool Definitions             ║
+║      TARS — Brain v4: Orchestrator Tool Definitions          ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  The brain doesn't do tasks itself — it DEPLOYS AGENTS.      ║
 ║  These tools let the brain deploy agents, communicate with   ║
 ║  the user, manage memory, scan the environment, verify       ║
-║  results, and checkpoint progress.                           ║
+║  results, search the web, and checkpoint progress.           ║
 ║                                                              ║
-║  Phase 1-5 tools for full autonomy.                          ║
+║  Phase 1-6 tools for full autonomy.                          ║
+║  + web_search (Phase 6: Live Knowledge Access)               ║
+║  + deploy_dev_agent v2 (VS Code Agent Mode orchestrator)     ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -150,11 +152,11 @@ TARS_TOOLS = [
     },
     {
         "name": "deploy_dev_agent",
-        "description": "Deploy Dev Agent — interactive senior developer over iMessage. Like GitHub Copilot Agent Mode, but controlled from your phone.\n\nThe Dev Agent TALKS to Abdullah during development:\n- Scans the project to understand architecture, stack, conventions\n- Presents a plan and asks for approval via iMessage\n- Implements changes (multi-file, surgical edits)\n- Runs tests automatically (fix → retest loop)\n- Shows diffs for review before risky changes\n- Commits at milestones, asks before pushing\n- Waits for user feedback and adjusts course\n\nUnlike Coder Agent (single-shot, no communication), Dev Agent is INTERACTIVE — it asks questions, proposes plans, sends progress updates, and waits for direction.\n\n⚠️ Sessions can take 10-30 min (user interaction wait time). Only deploy for real development work.\n\n✅ GOOD: 'Add dark mode toggle to the settings page in /Users/X/projects/myapp. Use Tailwind. The settings component is in src/components/Settings.tsx'\n✅ GOOD: 'Refactor the auth module in /Users/X/api to use JWT instead of sessions. There are 3 route files that need updating.'\n✅ GOOD: 'Build a REST API for the todo app at /Users/X/todo-api. Use Express + TypeScript. Include CRUD endpoints and tests.'\n❌ BAD: 'Write a hello world script' — too simple, use run_quick_command\n❌ BAD: 'Fix this one-line bug' — use deploy_coder_agent for quick fixes",
+        "description": "Deploy Dev Agent v2 — orchestrates VS Code Agent Mode (Claude Opus 4) for autonomous software development.\n\nThe Dev Agent opens VS Code, activates Agent Mode (Copilot with Claude Opus 4), and gives it a complete task. It monitors progress autonomously — no human interaction needed.\n\nCapabilities: Full-stack development, multi-file edits, refactoring, debugging, testing, git operations, package management, project scaffolding. Has access to the entire codebase, terminal, and VS Code APIs.\n\nCRITICAL — Give COMPLETE context:\n- Full project path (absolute)\n- What to build/change (specific requirements)\n- Tech stack preferences\n- File locations if known\n- Expected behavior / test criteria\n\n✅ GOOD: 'In /Users/abdullah/projects/myapp, add a dark mode toggle to src/components/Settings.tsx. Use Tailwind CSS. Save preference to localStorage. Toggle should be in the header nav.'\n✅ GOOD: 'Refactor the auth module in /Users/abdullah/api to use JWT. Update routes in src/routes/auth.ts, src/routes/users.ts, and src/middleware/auth.ts. Add tests.'\n❌ BAD: 'Write a hello world script' — too simple, use run_quick_command\n❌ BAD: 'Fix a bug' — be specific about what and where\n\n⚠️ Sessions take 5-30 min. Only deploy for substantial development work.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "task": {"type": "string", "description": "Development task: project path, what to build/change, tech preferences, constraints. Include the full project path so the agent can scan it."}
+                "task": {"type": "string", "description": "COMPLETE development task: project path, what to build/change, tech preferences, constraints, expected behavior."}
             },
             "required": ["task"]
         }
@@ -227,6 +229,17 @@ TARS_TOOLS = [
                 "timeout": {"type": "integer", "description": "Timeout seconds (default 30)", "default": 30}
             },
             "required": ["command"]
+        }
+    },
+    {
+        "name": "web_search",
+        "description": "Quick Google search — returns top results with titles and snippets. Use this for fast factual lookups WITHOUT deploying an agent.\n\nPhase 6: Live Knowledge Access. The Brain can search the web directly when it needs current info to reason about a task.\n\nGood for: current events, quick facts, product prices, API docs, error messages, 'what is X', definitions, recent news.\nNOT for: deep research (use deploy_research_agent), multi-page analysis, comparison shopping.\n\nExamples:\n  web_search('current weather Tampa FL')\n  web_search('Python asyncio gather timeout')\n  web_search('latest iPhone 17 release date')\n  web_search('litellm rate limit error 429 fix')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Google search query — be specific for better results"}
+            },
+            "required": ["query"]
         }
     },
     {

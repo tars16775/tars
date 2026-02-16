@@ -34,6 +34,7 @@ os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 
 from brain.planner import TARSBrain
+from brain.message_parser import MessageStreamParser, MessageBatch
 from executor import ToolExecutor
 from voice.imessage_send import IMessageSender
 from voice.imessage_read import IMessageReader
@@ -57,8 +58,8 @@ BANNER = """
      ██║   ██║  ██║██║  ██║███████║
      ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
 \033[0m
-  \033[90mAutonomous Mac Agent — v3.0 Multi-Agent\033[0m
-  \033[90m"Humor: 75% — Honesty: 90%"\033[0m
+  \033[90mAutonomous Mac Agent — v4.0 Brain\033[0m
+  \033[90m"The Brain That Thinks — Phase 1-5"\033[0m
   \033[90mDashboard: http://localhost:8420\033[0m
 """
 
@@ -164,6 +165,13 @@ class TARS:
         self.brain = TARSBrain(self.config, self.executor, self.memory)
         print("  🤖 Orchestrator brain online")
 
+        # Phase 1: Message Stream Parser
+        # Accumulates back-to-back messages (3s window) and merges intelligently
+        self.message_parser = MessageStreamParser(
+            on_batch_ready=self._on_batch_ready
+        )
+        print("  📨 Message stream parser ready (3s merge window)")
+
         self.monitor = agent_monitor
         print("  📊 Agent monitor active")
 
@@ -179,6 +187,10 @@ class TARS:
     def _shutdown(self, *args):
         """Graceful shutdown — stops agents, drains queue, then exits."""
         print("\n\n  🛑 TARS shutting down...")
+
+        # Flush any pending messages in the stream parser
+        if hasattr(self, 'message_parser'):
+            self.message_parser.force_flush()
 
         # Signal all running agents to stop
         self._kill_event.set()
@@ -256,12 +268,20 @@ class TARS:
             print("  📱 Listening for messages...\n")
 
         # Main loop — keep working forever
+        # Messages are fed through the stream parser which:
+        #   1. Accumulates back-to-back messages (3s window)
+        #   2. Detects corrections ("actually make it Tokyo")
+        #   3. Detects additions ("also track the price")
+        #   4. Merges intelligently into a single batch
+        #   5. Calls _on_batch_ready() which queues for the brain
         while self.running:
             try:
                 # Wait for a new message via iMessage
                 conv_msgs = self.brain._message_count
                 conv_ctx = len(self.brain.conversation_history)
-                print(f"  ⏳ Waiting for message... (conversation: {conv_msgs} msgs, {conv_ctx} ctx entries)")
+                active = self.brain.threads.active_thread
+                thread_info = f", thread: {active.topic[:30]}" if active else ""
+                print(f"  ⏳ Waiting for message... (msgs: {conv_msgs}, ctx: {conv_ctx}{thread_info})")
                 reply = self.imessage_reader.wait_for_reply(timeout=3600)  # 1 hour timeout
 
                 if reply.get("success"):
@@ -271,19 +291,20 @@ class TARS:
                     # Check kill switch — stops all running agents
                     if any(kw.lower() in task.lower() for kw in self.kill_words):
                         print(f"  🛑 Kill command received: {task}")
-                        self._kill_event.set()  # Signal all running agents to stop
+                        self._kill_event.set()
                         event_bus.emit("kill_switch", {"source": "imessage"})
                         try:
                             self.imessage_sender.send("🛑 Kill switch activated — all agents stopped.")
                         except Exception:
                             pass
-                        # Reset kill event after a beat so new tasks can run
                         time.sleep(1)
                         self._kill_event.clear()
                         continue
 
-                    # Process the message (brain classifies: chat vs task)
-                    self._process_task(task)
+                    # Feed through the message stream parser (Phase 1)
+                    # Parser accumulates for 3s, merges back-to-back messages,
+                    # then calls _on_batch_ready() which queues for the brain
+                    self.message_parser.ingest(task)
                 else:
                     # Timed out — just keep waiting silently
                     print("  💤 Still waiting...")
@@ -295,33 +316,69 @@ class TARS:
                 print(f"  ⚠️ Error: {e} — continuing...")
                 time.sleep(5)
 
+    def _on_batch_ready(self, batch):
+        """
+        Called by the MessageStreamParser when a batch of messages is ready.
+        
+        Phase 1: Back-to-back messages have been accumulated and merged.
+        The batch knows if it's a correction, addition, or new task.
+        
+        Queue it for the task worker to process.
+        """
+        if batch.batch_type == "multi_task" and batch.individual_tasks:
+            # Multiple independent tasks — queue each separately
+            print(f"  📨 Received {len(batch.individual_tasks)} separate tasks")
+            for task_text in batch.individual_tasks:
+                single_batch = MessageBatch(
+                    messages=batch.messages,
+                    merged_text=task_text,
+                    batch_type="single",
+                    timestamp=batch.timestamp,
+                )
+                self._task_queue.put(single_batch)
+        else:
+            # Single task or merged batch
+            info = f"({batch.batch_type})" if batch.batch_type != "single" else ""
+            print(f"  📨 Batch ready {info}: {batch.merged_text[:100]}")
+            self._task_queue.put(batch)
+
     def _process_task(self, task):
         """
-        Process a message through the TARS brain.
-        
-        v4: The brain handles classification (chat vs task) internally.
-        We DON'T reset conversation history — TARS remembers the flow.
-        We only reset the deployment budget so each message gets fresh agents.
-        Thread-safe: queued via self._task_queue so messages are never lost.
+        Legacy entry point — wraps a string into a batch.
+        Used for initial_task from command line.
         """
-        # Put task on queue — the worker processes them in order
-        self._task_queue.put(task)
+        batch = MessageBatch(
+            messages=[],
+            merged_text=task,
+            batch_type="single",
+            timestamp=time.time(),
+        )
+        self._task_queue.put(batch)
 
     def _task_worker(self):
         """Background worker that processes tasks from the queue, one at a time."""
         while self.running:
             try:
-                task = self._task_queue.get(timeout=1)
+                item = self._task_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
             try:
+                # Handle both MessageBatch (new) and raw strings (legacy)
+                if isinstance(item, MessageBatch):
+                    task_text = item.merged_text
+                    batch = item
+                else:
+                    task_text = str(item)
+                    batch = None
+
                 print(f"\n  {'═' * 50}")
-                print(f"  📨 Message: {task}")
+                batch_info = f" [{batch.batch_type}]" if batch and batch.batch_type != "single" else ""
+                print(f"  📨 Message{batch_info}: {task_text[:120]}")
                 print(f"  {'═' * 50}\n")
 
-                self.logger.info(f"New message: {task}")
-                event_bus.emit("task_received", {"task": task, "source": "agent"})
+                self.logger.info(f"New message: {task_text}")
+                event_bus.emit("task_received", {"task": task_text, "source": "agent"})
                 event_bus.emit("status_change", {"status": "working", "label": "WORKING"})
 
                 # Reset deployment tracker (fresh agent budget) but NOT conversation
@@ -334,14 +391,19 @@ class TARS:
                 )
                 progress_collector.start()
 
-                # Send to brain — wrapped in try/finally so progress
-                # collector is ALWAYS cleaned up, even on crash
+                # Send to brain — use process() for batches, think() for strings
+                # brain.process() is the Phase 4 entry point:
+                #   classify intent → route to thread → auto-recall → think → record
                 try:
-                    response = self.brain.think(task)
+                    if batch:
+                        response = self.brain.process(batch)
+                    else:
+                        response = self.brain.think(task_text)
                 finally:
                     progress_collector.stop()
 
                 # Log the result
+                task = task_text  # For the rest of the method
                 self.logger.info(f"Cycle complete. Response: {response[:200]}")
 
                 # ── Send the brain's final response to the user via iMessage ──
