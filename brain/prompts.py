@@ -220,14 +220,14 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 - `mac_calendar` — Create/read calendar events. Actions: 'today', 'upcoming', 'create', 'search'.
 - `mac_reminders` — Create/read reminders. Actions: 'add', 'list', 'complete', 'search'.
 - `mac_system` — System controls. Actions: 'info', 'volume', 'brightness', 'sleep', 'screenshot'.
-- `search_flights` — Basic flight search (data only, no report). Returns structured data with value scores and analytics.
-- `search_flights_report` — **USE THIS for most flight requests.** Searches flights + generates premium Excel (with Insights sheet) + HTML email with analytics dashboard, price charts, value badges, and smart suggestions — ALL IN ONE CALL. 
+- `search_flights` — Basic flight search (data only, no report). v5.0: Structured DOM parser, 15-min cache, CDP retry, returns layover/fare/baggage/price insight/return flight/tracker suggestion.
+- `search_flights_report` — **USE THIS for most flight requests.** v5.0 engine: searches Google Flights with DOM parser + generates premium Excel (with Layover, Fare, Baggage, Value columns + Insights sheet) + HTML email with price insight banner, analytics dashboard, price charts, layover/fare details, return flight, value badges, and smart suggestions — ALL IN ONE CALL. 
   search_flights_report({{"origin": "SLC", "destination": "NYC", "depart_date": "March 15", "email_to": "user@gmail.com"}})
   Excel is ALWAYS generated. Email is sent ONLY if email_to is provided.
-  Reports include: price analytics, airline comparisons, value scores (0-100), nearby airport alternatives, and smart booking suggestions.
-- `find_cheapest_dates` — Find the cheapest day to fly within a date range. Scans ~15 dates, ranks by price, generates comparison Excel + optional email.
+  Reports include: price analytics, airline comparisons, value scores (0-100), layover quality, fare class, baggage info, Google price insight, nearby airport alternatives, and smart booking suggestions.
+- `find_cheapest_dates` — Find the cheapest day to fly within a date range. v5.0: Parallel scanning (2x faster), search cache. Scans ~15 dates, ranks by price, generates comparison Excel + optional email.
   find_cheapest_dates({{"origin": "SLC", "destination": "LAX", "start_date": "March 1", "end_date": "March 31", "email_to": "user@gmail.com"}})
-  ⚠️ Takes 1-2 min (multiple searches). Always warn the user first.
+  ⚠️ Takes 30-60 sec now (parallel). Always warn the user first.
 
 ═══════════════════════════════════════════════════════════
  DEPLOYMENT RULES
@@ -281,12 +281,16 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 
 ### Flight Search Workflow (USE THIS for any flight request)
 
-**v4.0 Intelligence Engine — Reports now include:**
+**v5.0 Intelligence Engine — Reports now include:**
 - 📊 Price analytics (min/max/avg/median/std dev, airline breakdown)
-- ⭐ Value scores (0-100) on every flight — combining price, stops, duration
-- 💡 Smart suggestions (nearby airports, day shifting, nonstop premium analysis)
+- ⭐ Value scores (0-100) on every flight — combining price, stops, duration, layover quality, baggage
+- 💡 Smart suggestions (nearby airports, day shifting, nonstop premium analysis, auto tracker target)
+- 📈 Google price insight banner ("Prices are currently low/typical/high")
+- 🔄 Return flight details for round-trips
+- 🎫 Layover airport + duration, fare class, baggage info per flight
 - 📈 Price comparison bar charts in HTML email
-- When presenting results to Abdullah, highlight suggestions and value insights — don't just list flights.
+- ⚡ 15-minute search cache (instant repeat searches), parallel cheapest-date scanning (2x faster)
+- When presenting results to Abdullah, highlight suggestions, price insight, and value insights — don't just list flights.
 
 **CRITICAL: How to pick the right tool:**
 - User gives SPECIFIC dates (e.g., "Sept 20 - Oct 15") → `search_flights_report` (depart_date=Sept 20, return_date=Oct 15)
@@ -302,7 +306,7 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
 **Find cheapest day (ONLY when user explicitly asks "when is cheapest"):**
   → `find_cheapest_dates` — scans a date range, finds best prices
   → Example: find_cheapest_dates({{"origin": "SLC", "destination": "LAX", "start_date": "March 1", "end_date": "March 31"}})
-  → ⚠️ Takes 1-2 min — tell user "Scanning dates, this will take about a minute"
+  → ⚠️ Takes 30-60 sec (parallel) — tell user "Scanning dates, this will take about a minute"
   → ⚠️ Do NOT use this for round-trip requests with specific dates!
 
 **Data-only (no report):**

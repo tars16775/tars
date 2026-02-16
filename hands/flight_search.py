@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       TARS — Flight Engine v4.0 (Intelligence Layer)         ║
+║       TARS — Flight Engine v5.0 (Structured DOM + Intel)     ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
 ║  Phase 1:  Core Engine — Google Flights URL builder, parser  ║
@@ -16,6 +16,10 @@
 ║  Phase 10: Tool Registration — brain tools + executor        ║
 ║  Phase 11: Intelligence Layer — suggestions, analytics,      ║
 ║            nearby airports, value scores, price insights     ║
+║  Phase 12: Structured DOM Parser — JSON from DOM, not regex  ║
+║  Phase 13: Return Flight + Layover + Fare + Baggage parsing  ║
+║  Phase 14: Google Price Insights scraping                    ║
+║  Phase 15: Search Cache + CDP Retry + Parallel Scanning      ║
 ║                                                              ║
 ║  ⚠️ ONLY Google Flights. NEVER Kayak/Skyscanner/Expedia.    ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -25,12 +29,46 @@ import json
 import math
 import os
 import re
+import hashlib
 import threading
 import time
 import urllib.parse
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from hands.cdp import CDP
+
+
+# ═══════════════════════════════════════════════════════
+#  PHASE 15A — Search Cache (15-min TTL)
+# ═══════════════════════════════════════════════════════
+
+_search_cache = {}  # key → {"result": ..., "ts": float}
+_CACHE_TTL = 900  # 15 minutes
+
+
+def _cache_key(origin, destination, depart_date, return_date, cabin, stops):
+    """Generate a unique cache key for a flight search."""
+    raw = f"{origin}|{destination}|{depart_date}|{return_date}|{cabin}|{stops}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _get_cached(key):
+    """Get a cached result if still valid."""
+    entry = _search_cache.get(key)
+    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+        return entry["result"]
+    return None
+
+
+def _set_cache(key, result):
+    """Cache a search result."""
+    _search_cache[key] = {"result": result, "ts": time.time()}
+    # Evict old entries (keep max 50)
+    if len(_search_cache) > 50:
+        oldest = sorted(_search_cache, key=lambda k: _search_cache[k]["ts"])
+        for old_key in oldest[:10]:
+            _search_cache.pop(old_key, None)
 
 
 def _load_config():
@@ -83,6 +121,28 @@ CITY_TO_IATA = {
     "pittsburgh": "PIT",
     "st louis": "STL", "saint louis": "STL",
     "honolulu": "HNL", "hawaii": "HNL",
+    # ── US Additional ──
+    "jacksonville": "JAX", "raleigh": "RDU", "raleigh durham": "RDU",
+    "indianapolis": "IND", "kansas city": "MCI", "columbus": "CMH",
+    "cincinnati": "CVG", "cleveland": "CLE", "milwaukee": "MKE",
+    "new orleans": "MSY", "memphis": "MEM", "richmond": "RIC",
+    "norfolk": "ORF", "birmingham": "BHM", "louisville": "SDF",
+    "buffalo": "BUF", "rochester": "ROC", "syracuse": "SYR",
+    "albany": "ALB", "hartford": "BDL", "sacramento": "SMF",
+    "san antonio": "SAT", "el paso": "ELP", "tucson": "TUS",
+    "albuquerque": "ABQ", "omaha": "OMA", "oklahoma city": "OKC",
+    "tulsa": "TUL", "boise": "BOI", "spokane": "GEG",
+    "anchorage": "ANC", "maui": "OGG", "kona": "KOA",
+    "savannah": "SAV", "charleston": "CHS", "myrtle beach": "MYR",
+    "key west": "EYW", "fort myers": "RSW", "west palm beach": "PBI",
+    "fort lauderdale": "FLL", "st pete": "PIE", "sarasota": "SRQ",
+    "daytona beach": "DAB", "pensacola": "PNS", "tallahassee": "TLH",
+    "burbank": "BUR", "long beach": "LGB", "ontario": "ONT",
+    "orange county": "SNA", "palm springs": "PSP", "santa barbara": "SBA",
+    "oakland": "OAK", "san jose": "SJC", "reno": "RNO",
+    "colorado springs": "COS", "little rock": "LIT", "des moines": "DSM",
+    "grand rapids": "GRR", "providence": "PVD", "manchester": "MHT",
+    "baltimore": "BWI",
     # ── International ──
     "london": "LHR", "heathrow": "LHR", "gatwick": "LGW",
     "paris": "CDG",
@@ -125,7 +185,7 @@ CITY_TO_IATA = {
     "lisbon": "LIS",
     "dublin": "DUB",
     "edinburgh": "EDI",
-    "manchester": "MAN",
+    "manchester uk": "MAN",
     "copenhagen": "CPH",
     "stockholm": "ARN",
     "oslo": "OSL",
@@ -140,11 +200,16 @@ CITY_TO_IATA = {
     "colombo": "CMB", "sri lanka": "CMB",
     "dhaka": "DAC", "bangladesh": "DAC",
     "islamabad": "ISB", "lahore": "LHE", "karachi": "KHI",
+    "peshawar": "PEW", "faisalabad": "LYP", "multan": "MUX",
+    "sialkot": "SKT", "quetta": "UET",
     "chennai": "MAA", "madras": "MAA",
     "bangalore": "BLR", "bengaluru": "BLR",
     "hyderabad": "HYD",
     "kolkata": "CCU", "calcutta": "CCU",
     "goa": "GOI",
+    "ahmedabad": "AMD", "pune": "PNQ", "jaipur": "JAI",
+    "lucknow": "LKO", "cochin": "COK", "kochi": "COK",
+    "trivandrum": "TRV", "amritsar": "ATQ",
     # ── Southeast Asia ──
     "manila": "MNL", "philippines": "MNL",
     "hanoi": "HAN", "ho chi minh": "SGN", "saigon": "SGN",
@@ -152,17 +217,25 @@ CITY_TO_IATA = {
     "bali": "DPS",
     "phuket": "HKT",
     "taipei": "TPE", "taiwan": "TPE",
+    "chiang mai": "CNX", "cebu": "CEB", "yangon": "RGN",
     # ── Middle East / Africa ──
     "abu dhabi": "AUH",
     "riyadh": "RUH", "jeddah": "JED", "saudi": "RUH",
+    "medina": "MED", "dammam": "DMM",
+    "muscat": "MCT", "oman": "MCT",
+    "bahrain": "BAH", "kuwait": "KWI",
     "tel aviv": "TLV", "israel": "TLV",
     "amman": "AMM", "jordan": "AMM",
     "beirut": "BEY", "lebanon": "BEY",
+    "baghdad": "BGW", "iraq": "BGW", "erbil": "EBL",
     "addis ababa": "ADD", "ethiopia": "ADD",
-    "lagos": "LOS", "nigeria": "LOS",
-    "casablanca": "CMN", "morocco": "CMN",
+    "lagos": "LOS", "nigeria": "LOS", "abuja": "ABV",
+    "casablanca": "CMN", "morocco": "CMN", "marrakech": "RAK",
     "cape town": "CPT",
     "dar es salaam": "DAR", "tanzania": "DAR",
+    "accra": "ACC", "ghana": "ACC",
+    "tunis": "TUN", "tunisia": "TUN",
+    "algiers": "ALG",
     # ── Americas ──
     "havana": "HAV", "cuba": "HAV",
     "san jose": "SJC", "costa rica": "SJO",
@@ -171,12 +244,38 @@ CITY_TO_IATA = {
     "medellin": "MDE",
     "quito": "UIO", "ecuador": "UIO",
     "montevideo": "MVD", "uruguay": "MVD",
+    "punta cana": "PUJ", "santo domingo": "SDQ",
+    "kingston": "KIN", "jamaica": "KIN",
+    "nassau": "NAS", "bahamas": "NAS",
+    "calgary": "YYC", "montreal": "YUL", "ottawa": "YOW",
+    "edmonton": "YEG", "winnipeg": "YWG", "halifax": "YHZ",
     # ── Oceania ──
     "auckland": "AKL", "new zealand": "AKL",
     "wellington": "WLG",
     "brisbane": "BNE",
     "perth": "PER",
     "fiji": "NAN",
+    "queenstown": "ZQN", "christchurch": "CHC",
+    "gold coast": "OOL", "cairns": "CNS",
+    # ── East Asia ──
+    "osaka": "KIX", "nagoya": "NGO", "fukuoka": "FUK", "sapporo": "CTS",
+    "guangzhou": "CAN", "shenzhen": "SZX", "chengdu": "CTU",
+    "hangzhou": "HGH", "nanjing": "NKG", "xi'an": "XIY", "xian": "XIY",
+    "busan": "PUS",
+    "macau": "MFM", "ulaanbaatar": "ULN", "mongolia": "ULN",
+    # ── Europe Additional ──
+    "nice": "NCE", "lyon": "LYS", "marseille": "MRS",
+    "venice": "VCE", "florence": "FLR", "naples": "NAP",
+    "porto": "OPO", "seville": "SVQ", "malaga": "AGP",
+    "brussels": "BRU", "geneva": "GVA",
+    "bucharest": "OTP", "budapest": "BUD",
+    "zagreb": "ZAG", "belgrade": "BEG", "sofia": "SOF",
+    "split": "SPU", "dubrovnik": "DBV",
+    "riga": "RIX", "tallinn": "TLL", "vilnius": "VNO",
+    "reykjavik": "KEF", "iceland": "KEF",
+    "malta": "MLA", "cyprus": "LCA",
+    "santorini": "JTR", "mykonos": "JMK", "crete": "HER",
+    "tenerife": "TFS", "canary islands": "TFS",
 }
 
 
@@ -512,6 +611,33 @@ AIRLINE_ALIASES = {
     "jal": "jal",
     "japan airlines": "jal",
     "all nippon airways": "ana",
+    "pia": "pia",
+    "pakistan international": "pia",
+    "pakistan international airlines": "pia",
+    "serene air": "serene air",
+    "airsial": "airsial",
+    "tap air portugal": "tap portugal",
+    "air arabia": "air arabia",
+    "flydubai": "flydubai",
+    "indigo": "indigo",
+    "spicejet": "spicejet",
+    "srilankan airlines": "srilankan",
+    "ethiopian airlines": "ethiopian",
+    "kenya airways": "kenya airways",
+    "royal air maroc": "royal air maroc",
+    "egyptair": "egyptair",
+    "china eastern": "china eastern",
+    "china southern": "china southern",
+    "air china": "air china",
+    "cathay pacific": "cathay pacific",
+    "korean air": "korean air",
+    "cebu pacific": "cebu pacific",
+    "airasia": "airasia",
+    "vietjet": "vietjet",
+    "starlux": "starlux",
+    "pegasus": "pegasus",
+    "wizz air": "wizz air",
+    "norse atlantic": "norse atlantic",
 }
 
 
@@ -566,11 +692,276 @@ def _get_airline_booking_url(airline_name: str, origin: str, destination: str,
 
 
 # ═══════════════════════════════════════════════════════
-#  PHASE 1 — Flight Data Extraction
+#  PHASE 12 — Structured DOM Flight Parser
 # ═══════════════════════════════════════════════════════
 
+# JavaScript injected into Google Flights via CDP to extract structured JSON
+# directly from the DOM instead of regex-parsing raw innerText.
+_DOM_EXTRACT_JS = r"""
+(function() {
+    var flights = [];
+    var seen = {};
+
+    // Google Flights price insight banner (e.g. "Prices are currently low")
+    var priceInsight = '';
+    var insightEls = document.querySelectorAll('[class*="price-insight"], [class*="advisory"], [data-lk]');
+    insightEls.forEach(function(el) {
+        var t = el.innerText.trim().toLowerCase();
+        if ((t.includes('prices are') || t.includes('price is') || t.includes('typically cost') || t.includes('is low') || t.includes('is high') || t.includes('cheaper than usual') || t.includes('more expensive')) && t.length < 300) {
+            priceInsight = el.innerText.trim();
+        }
+    });
+    // Also check for the insights section
+    if (!priceInsight) {
+        var allText = document.body.innerText;
+        var insightMatch = allText.match(/(Prices are (?:currently |typically )?(?:low|high|typical|higher than usual|lower than usual)[^.]*\.)/i);
+        if (insightMatch) priceInsight = insightMatch[1];
+        if (!priceInsight) {
+            var costMatch = allText.match(/((?:Flights |These flights |Prices )(?:typically cost|usually cost|are priced)[^.]*\.)/i);
+            if (costMatch) priceInsight = costMatch[1];
+        }
+    }
+
+    // Try data-resultid elements first (most reliable)
+    var cards = document.querySelectorAll('[data-resultid]');
+    if (cards.length === 0) {
+        cards = document.querySelectorAll('li[class*="pIav2d"], ul[class*="Rk10dc"] > li, [role="listitem"]');
+    }
+    if (cards.length === 0) {
+        cards = document.querySelectorAll('li');
+    }
+
+    cards.forEach(function(card) {
+        var text = card.innerText.trim();
+        if (!text.includes('$') || text.length < 20 || text.length > 800) return;
+
+        var flight = {};
+
+        // Price — look for $ followed by digits
+        var priceMatch = text.match(/\$[\d,]+/);
+        if (priceMatch) flight.price = priceMatch[0];
+        else return;
+
+        // Times — "HH:MM AM/PM"
+        var times = text.match(/\d{1,2}:\d{2}\s*(?:AM|PM)/gi);
+        if (times && times.length >= 2) {
+            flight.depart_time = times[0];
+            flight.arrive_time = times[1];
+        }
+
+        // Duration — "X hr Y min" or "Xhr Ymin"
+        var durMatch = text.match(/(\d+)\s*h(?:r|rs?)?\s*(?:(\d+)\s*m(?:in)?)?/i);
+        if (durMatch) {
+            flight.duration = durMatch[0].trim();
+        }
+
+        // Stops — "Nonstop" or "N stop(s)"
+        if (/\bnonstop\b/i.test(text)) {
+            flight.stops = 'Nonstop';
+        } else {
+            var stopMatch = text.match(/(\d+)\s*stop/i);
+            if (stopMatch) {
+                var n = parseInt(stopMatch[1]);
+                flight.stops = n + ' stop' + (n > 1 ? 's' : '');
+            }
+        }
+
+        // Layover details — "Stop in XXX" or "Layover X hr in XXX"
+        var layoverMatch = text.match(/(?:stop|layover|connection)\s+(?:(\d+\s*h(?:r|rs?)?\s*(?:\d+\s*m(?:in)?)?)\s+)?(?:in|at)\s+([A-Z]{3}(?:\s*,\s*[A-Z]{3})*)/i);
+        if (layoverMatch) {
+            flight.layover_duration = layoverMatch[1] || '';
+            flight.layover_airport = layoverMatch[2] || '';
+        }
+        // Also try: "2 hr 15 min DEN" pattern (layover duration + airport code)
+        if (!flight.layover_airport && flight.stops && flight.stops !== 'Nonstop') {
+            var layPattern = text.match(/(\d+\s*h(?:r|rs?)?\s*\d*\s*m?(?:in)?)\s+([A-Z]{3})\b/);
+            if (layPattern && layPattern[2] !== flight.depart_time) {
+                flight.layover_duration = layPattern[1];
+                flight.layover_airport = layPattern[2];
+            }
+        }
+
+        // Fare class / cabin
+        var fareTexts = ['basic economy', 'main cabin', 'economy', 'premium economy',
+                        'business', 'first class', 'basic', 'comfort+', 'delta one',
+                        'polaris', 'mint', 'flagship'];
+        var textLower = text.toLowerCase();
+        for (var fi = 0; fi < fareTexts.length; fi++) {
+            if (textLower.includes(fareTexts[fi])) {
+                flight.fare_class = fareTexts[fi].charAt(0).toUpperCase() + fareTexts[fi].slice(1);
+                break;
+            }
+        }
+
+        // Baggage — check for carry-on / checked bag mentions
+        if (/no carry-on/i.test(text)) {
+            flight.baggage = 'No carry-on';
+        } else if (/carry-on bag/i.test(text) && /no checked bag/i.test(text)) {
+            flight.baggage = 'Carry-on only';
+        } else if (/checked bag/i.test(text)) {
+            flight.baggage = 'Checked bag included';
+        } else if (/carry-on/i.test(text)) {
+            flight.baggage = 'Carry-on included';
+        }
+
+        // Airline — check known airlines list
+        var airlines = [
+            'Delta', 'United', 'American', 'Southwest', 'JetBlue', 'Spirit',
+            'Frontier', 'Alaska', 'Hawaiian', 'Sun Country', 'Breeze', 'Allegiant',
+            'Air Canada', 'WestJet',
+            'British Airways', 'Lufthansa', 'Air France', 'KLM', 'Iberia',
+            'Ryanair', 'EasyJet', 'Norwegian', 'SAS', 'Swiss', 'Austrian',
+            'TAP Portugal', 'TAP Air Portugal', 'Aer Lingus', 'Finnair', 'Icelandair', 'Condor',
+            'Emirates', 'Qatar Airways', 'Turkish Airlines', 'Etihad', 'Saudia',
+            'Royal Jordanian', 'Oman Air', 'Gulf Air', 'flynas', 'Air Arabia',
+            'Singapore Airlines', 'ANA', 'JAL', 'Japan Airlines',
+            'All Nippon Airways', 'Cathay Pacific', 'Korean Air',
+            'Asiana', 'China Airlines', 'EVA Air', 'Thai Airways',
+            'Vietnam Airlines', 'Philippine Airlines', 'Malaysia Airlines',
+            'Garuda Indonesia', 'Air India', 'IndiGo', 'SpiceJet',
+            'PIA', 'Pakistan International', 'Serene Air', 'AirSial', 'airblue',
+            'Avianca', 'Copa', 'Volaris', 'VivaAerobus', 'LATAM',
+            'Aeromexico', 'GOL', 'Azul',
+            'Qantas', 'Air New Zealand', 'Fiji Airways',
+            'Pegasus', 'Norse Atlantic', 'Play', 'Transavia',
+            'Vueling', 'Wizz Air', 'LOT Polish', 'Czech Airlines',
+            'flydubai', 'Jazeera Airways', 'SriLankan Airlines',
+            'Nepal Airlines', 'Biman Bangladesh', 'Air China',
+            'China Eastern', 'China Southern', 'Hainan Airlines',
+            'Xiamen Airlines', 'Sichuan Airlines', 'Spring Airlines',
+            'Bamboo Airways', 'Cebu Pacific', 'AirAsia', 'Scoot',
+            'Jetstar', 'Tiger Air', 'Peach Aviation',
+            'Ethiopian Airlines', 'Kenya Airways', 'South African Airways',
+            'Royal Air Maroc', 'EgyptAir', 'Tunisair',
+            'Caribbean Airlines', 'JetSMART', 'SKY Airline',
+            'Starlux', 'Vietjet'
+        ];
+        var lines = text.split('\n');
+        for (var li = 0; li < lines.length && li < 15; li++) {
+            var lineTrim = lines[li].trim();
+            for (var ai = 0; ai < airlines.length; ai++) {
+                if (lineTrim.toLowerCase() === airlines[ai].toLowerCase() ||
+                    (lineTrim.toLowerCase().includes(airlines[ai].toLowerCase()) && lineTrim.length < 40)) {
+                    flight.airline = airlines[ai];
+                    break;
+                }
+            }
+            if (flight.airline) break;
+        }
+
+        // Codeshare / operated by
+        var operatedMatch = text.match(/(?:operated|marketed)\s+by\s+([A-Za-z\s]+?)(?:\.|,|\n)/i);
+        if (operatedMatch) {
+            flight.operated_by = operatedMatch[1].trim();
+        }
+
+        // Airport codes from text
+        var airportCodes = text.match(/\b([A-Z]{3})\b/g);
+        if (airportCodes) {
+            var skip = ['THE','AND','FOR','NOT','ALL','NEW','USD','AVG','TOP','SEE',
+                       'MON','TUE','WED','THU','FRI','SAT','SUN','JAN','FEB','MAR',
+                       'APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC','EST','PST','CST','MST'];
+            var codes = airportCodes.filter(function(c) { return skip.indexOf(c) === -1; });
+            if (codes.length >= 2) {
+                flight.from_airport = codes[0];
+                flight.to_airport = codes[codes.length > 2 ? codes.length - 1 : 1];
+            }
+        }
+
+        // Emissions
+        var emissionMatch = text.match(/(\d+)\s*kg\s*CO/i);
+        if (emissionMatch) {
+            flight.emissions_kg = parseInt(emissionMatch[1]);
+        }
+
+        // Dedup key
+        var key = (flight.price || '') + '_' + (flight.airline || '') + '_' + (flight.depart_time || '');
+        if (seen[key]) return;
+        seen[key] = true;
+
+        if (flight.price) flights.push(flight);
+    });
+
+    // Sort by price
+    flights.sort(function(a, b) {
+        var pa = parseInt((a.price || '$99999').replace(/[^0-9]/g, ''));
+        var pb = parseInt((b.price || '$99999').replace(/[^0-9]/g, ''));
+        return pa - pb;
+    });
+
+    return JSON.stringify({flights: flights, priceInsight: priceInsight, count: flights.length});
+})()
+"""
+
+# JavaScript for extracting return flight info (second leg of round-trip)
+_RETURN_FLIGHT_JS = r"""
+(function() {
+    // Google Flights often shows "Departing" and "Returning" sections
+    var text = document.body.innerText;
+    var returnInfo = {};
+
+    // Look for return flight section
+    var returnMatch = text.match(/(?:Return|Returning|Return flight)[:\s]*\n?([\s\S]{0,500})/i);
+    if (returnMatch) {
+        var rText = returnMatch[1];
+        var rPrice = rText.match(/\$[\d,]+/);
+        var rTimes = rText.match(/\d{1,2}:\d{2}\s*(?:AM|PM)/gi);
+        var rDur = rText.match(/(\d+)\s*h(?:r|rs?)?\s*(?:(\d+)\s*m(?:in)?)?/i);
+        var rStop = rText.match(/(\d+)\s*stop/i);
+        var rNonstop = /\bnonstop\b/i.test(rText);
+
+        if (rTimes && rTimes.length >= 2) {
+            returnInfo.depart_time = rTimes[0];
+            returnInfo.arrive_time = rTimes[1];
+        }
+        if (rDur) returnInfo.duration = rDur[0].trim();
+        if (rNonstop) returnInfo.stops = 'Nonstop';
+        else if (rStop) returnInfo.stops = rStop[1] + ' stop' + (parseInt(rStop[1]) > 1 ? 's' : '');
+    }
+
+    return JSON.stringify(returnInfo);
+})()
+"""
+
+
+def _extract_flight_data_dom(cdp) -> dict:
+    """Extract structured flight data from Google Flights via DOM parsing.
+
+    Returns: {"flights": [...], "price_insight": str, "return_flight": dict}
+    Much more reliable than regex on raw page text.
+    """
+    result = {"flights": [], "price_insight": "", "return_flight": {}}
+
+    try:
+        r = cdp.send("Runtime.evaluate", {
+            "expression": _DOM_EXTRACT_JS,
+            "returnByValue": True,
+        })
+        raw = r.get("result", {}).get("value", "{}")
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        result["flights"] = data.get("flights", [])
+        result["price_insight"] = data.get("priceInsight", "")
+    except Exception as e:
+        print(f"    ⚠️ DOM extraction failed: {e}")
+
+    # Try to get return flight info for round-trips
+    try:
+        r2 = cdp.send("Runtime.evaluate", {
+            "expression": _RETURN_FLIGHT_JS,
+            "returnByValue": True,
+        })
+        raw2 = r2.get("result", {}).get("value", "{}")
+        ret_data = json.loads(raw2) if isinstance(raw2, str) else raw2
+        if ret_data and any(ret_data.values()):
+            result["return_flight"] = ret_data
+    except Exception:
+        pass
+
+    return result
+
+
 def _extract_flight_data(page_text: str) -> list:
-    """Parse Google Flights results text into structured flight data."""
+    """Fallback parser: regex on raw page text (used when DOM extraction fails)."""
     flights = []
     lines = page_text.split("\n")
     i = 0
@@ -600,23 +991,34 @@ def _extract_flight_data(page_text: str) -> list:
                 # European
                 "British Airways", "Lufthansa", "Air France", "KLM", "Iberia",
                 "Ryanair", "EasyJet", "Norwegian", "SAS", "Swiss", "Austrian",
-                "TAP Portugal", "Aer Lingus", "Finnair", "Icelandair", "Condor",
+                "TAP Portugal", "TAP Air Portugal", "Aer Lingus", "Finnair", "Icelandair", "Condor",
+                "Vueling", "Wizz Air", "LOT Polish", "Transavia", "Play",
                 # Middle East
                 "Emirates", "Qatar Airways", "Turkish Airlines", "Etihad", "Saudia",
-                "Royal Jordanian", "Oman Air", "Gulf Air",
+                "Royal Jordanian", "Oman Air", "Gulf Air", "flynas", "Air Arabia",
+                "flydubai", "Jazeera Airways",
                 # Asian
                 "Singapore Airlines", "ANA", "JAL", "Japan Airlines",
                 "All Nippon Airways", "Cathay Pacific", "Korean Air",
                 "Asiana", "China Airlines", "EVA Air", "Thai Airways",
                 "Vietnam Airlines", "Philippine Airlines", "Malaysia Airlines",
-                "Garuda Indonesia", "Air India",
+                "Garuda Indonesia", "Air India", "IndiGo", "SpiceJet",
+                "Air China", "China Eastern", "China Southern", "Hainan Airlines",
+                "Starlux", "Vietjet", "Bamboo Airways", "Cebu Pacific",
+                "AirAsia", "Scoot", "Jetstar", "Peach Aviation",
+                # South Asia
+                "PIA", "Pakistan International", "Serene Air", "AirSial", "airblue",
+                "SriLankan Airlines", "Nepal Airlines", "Biman Bangladesh",
                 # Latin American
                 "Avianca", "Copa", "Volaris", "VivaAerobus", "LATAM",
-                "Aeromexico", "GOL", "Azul",
+                "Aeromexico", "GOL", "Azul", "JetSMART", "SKY Airline",
                 # Oceania
                 "Qantas", "Air New Zealand", "Fiji Airways",
-                # Cargo/Charter (sometimes shown)
-                "Icelandair", "WOW", "Norse Atlantic",
+                # African
+                "Ethiopian Airlines", "Kenya Airways", "South African Airways",
+                "Royal Air Maroc", "EgyptAir",
+                # Other
+                "Norse Atlantic", "Pegasus",
             ]
             for li in range(max(0, i - 12), i):
                 line_text = lines[li].strip()
@@ -811,7 +1213,31 @@ def _analyze_flights(flights: list, origin_code: str, dest_code: str,
             dur_mins += int(min_m.group(1))
         dur_bonus = max(0, 15 - (dur_mins / 60)) if dur_mins > 0 else 0
 
-        score = min(100, price_score + stop_bonus + dur_bonus)
+        # v5.0 — Layover quality bonus (short layover = better for connecting)
+        layover_bonus = 0
+        if f.get("layover_duration") and "nonstop" not in f.get("stops", "").lower():
+            lay_text = f.get("layover_duration", "")
+            lay_mins = 0
+            lay_hr = re.search(r'(\d+)\s*hr?', lay_text)
+            lay_min = re.search(r'(\d+)\s*min', lay_text)
+            if lay_hr:
+                lay_mins = int(lay_hr.group(1)) * 60
+            if lay_min:
+                lay_mins += int(lay_min.group(1))
+            if 60 <= lay_mins <= 150:
+                layover_bonus = 5  # Ideal layover (1-2.5h)
+            elif lay_mins > 300:
+                layover_bonus = -5  # Long layover penalty
+
+        # v5.0 — Baggage bonus
+        baggage_bonus = 0
+        bag = f.get("baggage", "").lower()
+        if "checked" in bag:
+            baggage_bonus = 3
+        elif "carry-on" in bag and "no" not in bag:
+            baggage_bonus = 1
+
+        score = min(100, max(0, price_score + stop_bonus + dur_bonus + layover_bonus + baggage_bonus))
         f["value_score"] = round(score)
         if score >= 85:
             f["value_label"] = "🟢 Excellent"
@@ -964,8 +1390,10 @@ def _analyze_flights(flights: list, origin_code: str, dest_code: str,
 
 
 def _format_flights_rich(flights: list, query_desc: str, origin_code: str,
-                          dest_code: str, depart_date: str, return_date: str = "") -> str:
-    """Format flights into a rich report with analytics and suggestions."""
+                          dest_code: str, depart_date: str, return_date: str = "",
+                          price_insight: str = "", return_flight: dict = None,
+                          tracker_suggestion: str = "") -> str:
+    """Format flights into a rich report with analytics, suggestions, and v5.0 details."""
     if not flights:
         return f"❌ No flights found for: {query_desc}\n\nTry different dates or a nearby airport."
 
@@ -977,6 +1405,10 @@ def _format_flights_rich(flights: list, query_desc: str, origin_code: str,
 
     lines = [f"✈️ **Flight Search Results** — {query_desc}\n"]
 
+    # v5.0 — Google Price Insight banner
+    if price_insight:
+        lines.append(f"📈 **Google Insight**: {price_insight}\n")
+
     # Quick stats bar
     lines.append(f"📊 {analytics['total_flights']} flights · "
                  f"${analytics['price_min']}–${analytics['price_max']} · "
@@ -984,19 +1416,35 @@ def _format_flights_rich(flights: list, query_desc: str, origin_code: str,
                  f"{analytics['nonstop_count']} nonstop · "
                  f"{analytics['airline_count']} airlines\n")
 
-    # Flight table with value scores
-    lines.append(f"{'#':<3} {'Price':<10} {'Airline':<15} {'Depart':<10} {'Arrive':<10} {'Duration':<12} {'Stops':<10} {'Value'}")
-    lines.append("─" * 90)
+    # Flight table with value scores + new v5.0 columns
+    lines.append(f"{'#':<3} {'Price':<10} {'Airline':<15} {'Depart':<10} {'Arrive':<10} {'Duration':<12} {'Stops':<12} {'Layover':<14} {'Value'}")
+    lines.append("─" * 100)
     for i, f in enumerate(flights[:15], 1):
+        layover = ""
+        if f.get("layover_airport"):
+            layover = f"via {f['layover_airport']}"
+            if f.get("layover_duration"):
+                layover += f" {f['layover_duration']}"
+        elif "nonstop" in f.get("stops", "").lower():
+            layover = "—"
+        fare_bag = ""
+        if f.get("fare_class"):
+            fare_bag = f.get("fare_class", "")
+        if f.get("baggage"):
+            fare_bag += f" [{f['baggage']}]" if fare_bag else f.get("baggage", "")
+
         lines.append(
             f"{i:<3} {f.get('price', '?'):<10} "
             f"{f.get('airline', '?'):<15} "
             f"{f.get('depart_time', '?'):<10} "
             f"{f.get('arrive_time', '?'):<10} "
             f"{f.get('duration', '?'):<12} "
-            f"{f.get('stops', '?'):<10} "
+            f"{f.get('stops', '?'):<12} "
+            f"{layover:<14} "
             f"{f.get('value_label', '')}"
         )
+        if fare_bag:
+            lines.append(f"{'':>3} {'':>10} {'':>15} 🎫 {fare_bag}")
     if len(flights) > 15:
         lines.append(f"\n... and {len(flights) - 15} more options")
 
@@ -1012,6 +1460,16 @@ def _format_flights_rich(flights: list, query_desc: str, origin_code: str,
         bv = scored[0]
         lines.append(f"⭐ **Best Value**: {bv.get('price', '?')} — {bv.get('airline', '?')} ({bv.get('stops', '?')}, {bv.get('duration', '?')}) — Score: {bv['value_score']}/100")
 
+    # v5.0 — Return flight info
+    if return_flight and return_flight.get("depart_time"):
+        rf = return_flight
+        lines.append(f"\n🔄 **Return Flight**: {rf.get('depart_time', '?')} → {rf.get('arrive_time', '?')} · "
+                      f"{rf.get('duration', '?')} · {rf.get('stops', '?')}")
+
+    # v5.0 — Tracker suggestion
+    if tracker_suggestion:
+        lines.append(f"\n{tracker_suggestion}")
+
     # Suggestions
     if suggestions:
         lines.append("\n💡 **Smart Suggestions:**")
@@ -1020,8 +1478,9 @@ def _format_flights_rich(flights: list, query_desc: str, origin_code: str,
 
     return "\n".join(lines)
 
-def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, flights, search_url):
-    """Generate a premium HTML email with analytics, value scores, price chart, and suggestions."""
+def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, flights, search_url,
+                               price_insight="", return_flight=None, tracker_suggestion=""):
+    """Generate a premium HTML email with analytics, value scores, price chart, suggestions, and v5.0 intel."""
     if not flights:
         return "<p>No flights found.</p>"
 
@@ -1055,7 +1514,7 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
           </td>
         </tr>"""
 
-    # Build flight rows with value badges
+    # Build flight rows with value badges + v5.0 layover/fare/baggage
     flight_rows = ""
     for i, f in enumerate(flights[:12], 1):
         bg = "#FFFFFF" if i % 2 == 1 else "#F8FAFC"
@@ -1069,6 +1528,22 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
         val_color = "#059669" if val_score >= 85 else "#2563EB" if val_score >= 70 else "#EAB308" if val_score >= 50 else "#F97316" if val_score >= 30 else "#94A3B8"
         stops_color = "#059669" if "nonstop" in f.get("stops", "").lower() else "#64748B"
         booking_url = f.get("booking_link", search_url)
+
+        # v5.0: layover detail line
+        detail_parts = []
+        if f.get("layover_airport"):
+            lay = f"via {f['layover_airport']}"
+            if f.get("layover_duration"):
+                lay += f" ({f['layover_duration']})"
+            detail_parts.append(lay)
+        if f.get("fare_class"):
+            detail_parts.append(f['fare_class'])
+        if f.get("baggage"):
+            detail_parts.append(f['baggage'])
+        detail_html = ""
+        if detail_parts:
+            detail_html = f'<div style="color:#94A3B8;font-size:10px;margin-top:3px;">{" · ".join(detail_parts)}</div>'
+
         flight_rows += f"""
         <tr style="background:{bg};">
           <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;">
@@ -1077,6 +1552,7 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
           <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;">
             <div style="font-weight:600;color:#1E293B;">{f.get('airline', '—')}</div>
             <div style="color:#64748B;font-size:11px;margin-top:2px;">{f.get('duration', '—')}</div>
+            {detail_html}
           </td>
           <td style="padding:12px 14px;border-bottom:1px solid #F1F5F9;">
             <div style="font-weight:500;color:#1E293B;font-size:13px;">{f.get('depart_time', '—')} → {f.get('arrive_time', '—')}</div>
@@ -1147,9 +1623,14 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
       <h1 style="color:#FFFFFF;font-size:24px;font-weight:700;margin:0;">Flight Intelligence Report</h1>
       <p style="color:#94A3B8;font-size:14px;margin:8px 0 0;">{origin_code} → {dest_code} · {date_display}</p>
       <div style="margin-top:12px;display:inline-block;background:rgba(255,255,255,0.1);padding:4px 14px;border-radius:20px;">
-        <span style="color:#94A3B8;font-size:11px;letter-spacing:0.5px;">POWERED BY TARS v4</span>
+        <span style="color:#94A3B8;font-size:11px;letter-spacing:0.5px;">POWERED BY TARS v5</span>
       </div>
     </div>
+
+    {"" if not price_insight else f'''
+    <div style="margin:24px 24px 0;padding:14px 20px;background:linear-gradient(135deg,#FFFBEB 0%,#FEF3C7 100%);border-radius:10px;border:1px solid #FDE68A;">
+      <div style="font-size:13px;color:#92400E;">📈 <strong>Google Insight:</strong> {price_insight}</div>
+    </div>'''}
 
     <div style="margin:24px;padding:20px;background:#F8FAFC;border-radius:12px;border:1px solid #E2E8F0;">
       <table width="100%" cellpadding="0" cellspacing="0">
@@ -1224,6 +1705,17 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
 
     {suggestions_html}
 
+    {"" if not return_flight or not return_flight.get("depart_time") else f'''
+    <div style="margin:0 24px 24px;padding:16px;background:linear-gradient(135deg,#F0F9FF 0%,#E0F2FE 100%);border-radius:10px;border:1px solid #7DD3FC;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#0369A1;font-weight:600;">🔄 RETURN FLIGHT</div>
+      <div style="margin-top:6px;font-size:15px;font-weight:700;color:#0C4A6E;">{return_flight.get("depart_time", "?")} → {return_flight.get("arrive_time", "?")} · {return_flight.get("duration", "?")} · {return_flight.get("stops", "?")}</div>
+    </div>'''}
+
+    {"" if not tracker_suggestion else f'''
+    <div style="margin:0 24px 24px;padding:14px 20px;background:#F5F3FF;border-radius:10px;border:1px solid #C4B5FD;">
+      <div style="font-size:13px;color:#5B21B6;">{tracker_suggestion}</div>
+    </div>'''}
+
     <div style="margin:24px;text-align:center;">
       <a href="{cheapest_booking}" style="display:inline-block;background:#059669;color:#FFFFFF;text-decoration:none;padding:14px 36px;border-radius:8px;font-weight:700;font-size:15px;">🛫 Book Cheapest ({cheapest.get('price', '—')} {cheapest.get('airline', '')}) →</a>
       <div style="margin-top:10px;">
@@ -1232,8 +1724,8 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
     </div>
 
     <div style="background:#0F172A;padding:24px;text-align:center;">
-      <p style="color:#64748B;font-size:11px;margin:0;">TARS Flight Intelligence · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
-      <p style="color:#475569;font-size:10px;margin:4px 0 0;">Prices may change. Links go directly to airline booking pages. Value scores combine price, duration, and stops.</p>
+      <p style="color:#64748B;font-size:11px;margin:0;">TARS Flight Intelligence v5.0 · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
+      <p style="color:#475569;font-size:10px;margin:4px 0 0;">Prices may change. Links go directly to airline booking pages. Value scores combine price, duration, stops, layover quality, and baggage.</p>
     </div>
   </div>
 </body>
@@ -1386,46 +1878,30 @@ def _html_price_alert_email(origin_code, dest_code, target_price, current_price,
 #  PHASE 1 — Main Flight Search Function
 # ═══════════════════════════════════════════════════════
 
-def search_flights(
-    origin: str, destination: str, depart_date: str,
-    return_date: str = "", passengers: int = 1,
-    trip_type: str = "round_trip", cabin: str = "economy",
-    stops: str = "any", sort_by: str = "price", max_price: int = 0,
-) -> dict:
-    """Search for flights using Google Flights (URL-parameter approach)."""
-    try:
-        origin_code = _resolve_airport(origin)
-        dest_code = _resolve_airport(destination)
-        depart = _parse_date(depart_date)
-        if trip_type == "one_way":
-            return_date = ""
-        query_desc = f"{origin_code} → {dest_code} on {depart}"
-        if return_date:
-            ret = _parse_date(return_date)
-            query_desc += f", returning {ret}"
-        if stops != "any":
-            query_desc += f" ({stops})"
-        if cabin != "economy":
-            query_desc += f" [{cabin}]"
-        url = _build_google_flights_url(
-            origin=origin, destination=destination,
-            depart_date=depart_date, return_date=return_date,
-            passengers=passengers, trip_type=trip_type,
-            cabin=cabin, stops=stops, sort_by=sort_by,
-        )
-        deadline = time.time() + 45
+def _cdp_flight_search(url: str, timeout: int = 50) -> dict:
+    """Execute a single CDP-based Google Flights search.
+
+    Returns {"flights": [...], "price_insight": str, "return_flight": dict, "raw_text": str}
+    Uses structured DOM extraction first, falls back to text parsing.
+    Includes automatic retry on CDP failure.
+    """
+    for attempt in range(2):  # Retry once on failure
         cdp = None
         try:
+            deadline = time.time() + timeout
             cdp = CDP()
             cdp.ensure_connected()
             cdp.send("Page.navigate", {"url": url})
             time.sleep(6)
+
             if time.time() > deadline:
-                raise _FlightSearchTimeout("Flight search timed out")
+                raise _FlightSearchTimeout("timeout")
+
+            # Wait for flight results to load
             page_text = ""
-            for attempt in range(5):
+            for _ in range(5):
                 if time.time() > deadline:
-                    raise _FlightSearchTimeout("Flight search timed out")
+                    raise _FlightSearchTimeout("timeout")
                 r = cdp.send("Runtime.evaluate", {
                     "expression": "document.body.innerText.substring(0, 15000)",
                     "returnByValue": True,
@@ -1434,65 +1910,168 @@ def search_flights(
                 if "$" in page_text and ("stop" in page_text.lower() or "nonstop" in page_text.lower()):
                     break
                 time.sleep(2)
+
             if time.time() > deadline:
-                raise _FlightSearchTimeout("Flight search timed out")
-            r2 = cdp.send("Runtime.evaluate", {
-                "expression": """
-                    (function() {
-                        let results = [];
-                        document.querySelectorAll('li, [role="listitem"], [data-resultid]').forEach(el => {
-                            let t = el.innerText.trim();
-                            if (t.includes('$') && t.length > 20 && t.length < 500) {
-                                results.push(t);
+                raise _FlightSearchTimeout("timeout")
+
+            # Phase 12: Structured DOM extraction (primary)
+            dom_result = _extract_flight_data_dom(cdp)
+            flights = dom_result.get("flights", [])
+            price_insight = dom_result.get("price_insight", "")
+            return_flight = dom_result.get("return_flight", {})
+
+            # If DOM extraction got few results, supplement with text parsing (fallback)
+            if len(flights) < 3:
+                r2 = cdp.send("Runtime.evaluate", {
+                    "expression": """
+                        (function() {
+                            let results = [];
+                            document.querySelectorAll('li, [role="listitem"], [data-resultid]').forEach(el => {
+                                let t = el.innerText.trim();
+                                if (t.includes('$') && t.length > 20 && t.length < 500) {
+                                    results.push(t);
+                                }
+                            });
+                            if (results.length === 0) {
+                                let main = document.querySelector('[role="main"]') || document.body;
+                                return main.innerText.substring(0, 20000);
                             }
-                        });
-                        if (results.length === 0) {
-                            let main = document.querySelector('[role="main"]') || document.body;
-                            return main.innerText.substring(0, 20000);
-                        }
-                        return results.join('\\n---\\n');
-                    })()
-                """,
-                "returnByValue": True,
-            })
-            extended_text = r2.get("result", {}).get("value", "")
-            combined_text = page_text + "\n" + (extended_text or "")
+                            return results.join('\\n---\\n');
+                        })()
+                    """,
+                    "returnByValue": True,
+                })
+                extended_text = r2.get("result", {}).get("value", "")
+                combined_text = page_text + "\n" + (extended_text or "")
+                fallback_flights = _extract_flight_data(combined_text)
+                # Merge: add any fallback flights not already found by DOM
+                existing_keys = set()
+                for f in flights:
+                    existing_keys.add(f"{f.get('price', '')}_{f.get('airline', '')}_{f.get('depart_time', '')}")
+                for fb in fallback_flights:
+                    key = f"{fb.get('price', '')}_{fb.get('airline', '')}_{fb.get('depart_time', '')}"
+                    if key not in existing_keys:
+                        flights.append(fb)
+                        existing_keys.add(key)
+
+            # Sort by price
+            flights.sort(key=lambda f: _price_num(f.get("price", "$99999")))
+
+            if cdp:
+                try: cdp.close()
+                except: pass
+
+            return {
+                "flights": flights,
+                "price_insight": price_insight,
+                "return_flight": return_flight,
+                "raw_text": page_text[:2000],
+            }
+
         except _FlightSearchTimeout:
             if cdp:
                 try: cdp.close()
                 except: pass
-            return {"success": False, "content": "❌ Flight search timed out.", "flights": []}
-        finally:
+            if attempt == 0:
+                print(f"    ⚠️ CDP attempt {attempt+1} timed out, retrying...")
+                time.sleep(2)
+                continue
+            return {"flights": [], "price_insight": "", "return_flight": {}, "raw_text": ""}
+
+        except Exception as e:
             if cdp:
                 try: cdp.close()
                 except: pass
-        flights = _extract_flight_data(combined_text)
+            if attempt == 0:
+                print(f"    ⚠️ CDP attempt {attempt+1} failed ({e}), retrying...")
+                time.sleep(2)
+                continue
+            return {"flights": [], "price_insight": "", "return_flight": {}, "raw_text": ""}
+
+    return {"flights": [], "price_insight": "", "return_flight": {}, "raw_text": ""}
+
+
+def search_flights(
+    origin: str, destination: str, depart_date: str,
+    return_date: str = "", passengers: int = 1,
+    trip_type: str = "round_trip", cabin: str = "economy",
+    stops: str = "any", sort_by: str = "price", max_price: int = 0,
+) -> dict:
+    """Search for flights using Google Flights (v5.0 — structured DOM + cache + retry)."""
+    try:
+        origin_code = _resolve_airport(origin)
+        dest_code = _resolve_airport(destination)
+        depart = _parse_date(depart_date)
+        if trip_type == "one_way":
+            return_date = ""
+        ret_parsed = _parse_date(return_date) if return_date else ""
+
+        query_desc = f"{origin_code} → {dest_code} on {depart}"
+        if ret_parsed:
+            query_desc += f", returning {ret_parsed}"
+        if stops != "any":
+            query_desc += f" ({stops})"
+        if cabin != "economy":
+            query_desc += f" [{cabin}]"
+
+        # Phase 15: Check cache first
+        c_key = _cache_key(origin_code, dest_code, depart, ret_parsed, cabin, stops)
+        cached = _get_cached(c_key)
+        if cached:
+            print(f"    ⚡ Cache hit for {origin_code}→{dest_code}")
+            return cached
+
+        url = _build_google_flights_url(
+            origin=origin, destination=destination,
+            depart_date=depart_date, return_date=return_date,
+            passengers=passengers, trip_type=trip_type,
+            cabin=cabin, stops=stops, sort_by=sort_by,
+        )
+
+        # Phase 12+15: Structured DOM search with CDP retry
+        cdp_result = _cdp_flight_search(url, timeout=50)
+        flights = cdp_result.get("flights", [])
+        price_insight = cdp_result.get("price_insight", "")
+        return_flight = cdp_result.get("return_flight", {})
+
         if max_price > 0:
             flights = [f for f in flights if _price_num(f.get("price", "$99999")) <= max_price]
 
-        # Assign per-flight airline booking links (direct to airline website)
-        ret_for_link = _parse_date(return_date) if return_date else ""
+        # Assign per-flight airline booking links
         for f in flights:
             airline = f.get("airline", "—")
             airline_url = _get_airline_booking_url(airline, origin, destination, depart_date, return_date)
-            if airline_url:
-                f["booking_link"] = airline_url
-            else:
-                f["booking_link"] = url  # Fallback to Google Flights
+            f["booking_link"] = airline_url if airline_url else url
 
-        # v4.0 — Compute intelligence layer (value scores + analytics)
-        origin_code = _resolve_airport(origin)
-        dest_code = _resolve_airport(destination)
-        depart_parsed = _parse_date(depart_date)
-        ret_parsed = _parse_date(return_date) if return_date else ""
-        intel = _analyze_flights(flights, origin_code, dest_code, depart_parsed, ret_parsed)
+        # v5.0 — Intelligence layer (value scores + analytics)
+        intel = _analyze_flights(flights, origin_code, dest_code, depart, ret_parsed)
 
-        report = _format_flights_rich(flights, query_desc, origin_code, dest_code, depart_parsed, ret_parsed)
-        return {
+        # Auto-suggest tracker target
+        tracker_suggestion = ""
+        if intel["analytics"].get("price_avg") and intel["analytics"].get("price_min"):
+            avg = intel["analytics"]["price_avg"]
+            mn = intel["analytics"]["price_min"]
+            suggested_target = round(mn * 0.85 / 10) * 10  # 15% below current cheapest, rounded to $10
+            if suggested_target > 50:
+                tracker_suggestion = f"💡 Set a price tracker at ${suggested_target} (15% below current cheapest) to catch a deal."
+
+        report = _format_flights_rich(flights, query_desc, origin_code, dest_code, depart, ret_parsed,
+                                       price_insight=price_insight, return_flight=return_flight,
+                                       tracker_suggestion=tracker_suggestion)
+
+        result = {
             "success": True, "content": report, "flights": flights,
             "url": url, "source": "Google Flights",
             "analytics": intel["analytics"], "suggestions": intel["suggestions"],
+            "price_insight": price_insight,
+            "return_flight": return_flight,
+            "tracker_suggestion": tracker_suggestion,
         }
+
+        # Cache the result
+        _set_cache(c_key, result)
+
+        return result
     except Exception as e:
         return {"success": False, "content": f"❌ Flight search failed: {str(e)}", "flights": [], "error": str(e)}
 
@@ -1528,14 +2107,14 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
         top=Side(style="thin", color="E2E8F0"), bottom=Side(style="thin", color="E2E8F0"),
     )
 
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=12)
     ws.cell(row=1, column=1, value=f"✈️ {title}").font = Font(name="Helvetica Neue", size=18, bold=True, color=DARK)
     ws.row_dimensions[1].height = 40
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=8)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=12)
     ws.cell(row=2, column=1, value=f"Generated by TARS · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}").font = Font(
         name="Helvetica Neue", size=9, italic=True, color=GRAY)
 
-    headers = ["#", "Price", "Airline", "Departure", "Arrival", "Duration", "Stops", "Value", "Book"]
+    headers = ["#", "Price", "Airline", "Departure", "Arrival", "Duration", "Stops", "Layover", "Fare", "Baggage", "Value", "Book"]
     start_row = 4
     for col_idx, h in enumerate(headers, 1):
         cell = ws.cell(row=start_row, column=col_idx, value=h)
@@ -1548,8 +2127,15 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
     for row_idx, f in enumerate(flights[:20], start_row + 1):
         i = row_idx - start_row
         val_score = f.get("value_score", 0)
+        # Build layover display
+        layover = ""
+        if f.get("layover_airport"):
+            layover = f"via {f['layover_airport']}"
+            if f.get("layover_duration"):
+                layover += f" ({f['layover_duration']})"
         values = [i, f.get("price", "—"), f.get("airline", "—"), f.get("depart_time", "—"),
-                  f.get("arrive_time", "—"), f.get("duration", "—"), f.get("stops", "—"), val_score, ""]
+                  f.get("arrive_time", "—"), f.get("duration", "—"), f.get("stops", "—"),
+                  layover, f.get("fare_class", "—"), f.get("baggage", "—"), val_score, ""]
         for col_idx, val in enumerate(values, 1):
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.font = data_font
@@ -1559,13 +2145,13 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
                 cell.fill = alt_fill
             if col_idx == 2:
                 cell.font = Font(name="Helvetica Neue", size=11, bold=True, color=GREEN) if i == 1 else Font(name="Helvetica Neue", size=10, bold=True)
-            if col_idx == 8:  # Value column
+            if col_idx == 11:  # Value column
                 if val_score >= 80:
                     cell.font = Font(name="Helvetica Neue", size=10, bold=True, color=GREEN)
                 elif val_score >= 60:
                     cell.font = Font(name="Helvetica Neue", size=10, bold=True, color=BLUE)
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-        link_cell = ws.cell(row=row_idx, column=9, value="View →")
+        link_cell = ws.cell(row=row_idx, column=12, value="View →")
         link_cell.hyperlink = f.get("booking_link", search_url)
         link_cell.font = link_font
         link_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -1578,7 +2164,7 @@ def _generate_flight_excel(title, flights, origin_code, dest_code, search_url, s
             ws.cell(row=srow + 1 + i, column=1, value=k).font = Font(name="Helvetica Neue", size=10, bold=True)
             ws.cell(row=srow + 1 + i, column=2, value=v).font = data_font
 
-    widths = [5, 10, 18, 12, 12, 14, 12, 8, 10]
+    widths = [5, 10, 18, 12, 12, 14, 12, 18, 16, 18, 8, 10]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -1816,9 +2402,12 @@ def search_flights_report(
     nonstops = [f for f in flights if "nonstop" in f.get("stops", "").lower()]
     best_ns = nonstops[0] if nonstops else None
 
-    # v4.0 — Grab intelligence from search result
+    # v4.0/v5.0 — Grab intelligence from search result
     analytics = result.get("analytics", {})
     suggestions = result.get("suggestions", [])
+    price_insight = result.get("price_insight", "")
+    return_flight = result.get("return_flight", {})
+    tracker_suggestion = result.get("tracker_suggestion", "")
 
     summary = {
         "Route": f"{origin_code} → {dest_code}", "Departure": depart,
@@ -1829,6 +2418,8 @@ def search_flights_report(
         summary["Cheapest Nonstop"] = f"{best_ns.get('price', '?')} — {best_ns.get('airline', '?')}"
     if analytics.get("price_avg"):
         summary["Average Price"] = f"${analytics['price_avg']}"
+    if price_insight:
+        summary["Google Insight"] = price_insight
     summary["Search Date"] = datetime.now().strftime("%B %d, %Y")
     summary["Source"] = "Google Flights"
 
@@ -1841,7 +2432,9 @@ def search_flights_report(
     email_msg = ""
     if email_to:
         try:
-            html = _html_flight_report_email(origin_code, dest_code, depart, ret_parsed, flights, search_url)
+            html = _html_flight_report_email(origin_code, dest_code, depart, ret_parsed, flights, search_url,
+                                              price_insight=price_insight, return_flight=return_flight,
+                                              tracker_suggestion=tracker_suggestion)
             mail_result = _send_html_email(
                 to_address=email_to,
                 subject=f"✈️ {origin_code}→{dest_code} Flight Report · {cheapest.get('price', '')} cheapest",
@@ -1866,13 +2459,21 @@ def search_flights_report(
         # Use airline-specific link for cheapest flight
         cheapest_link = cheapest.get("booking_link", search_url)
 
-        # v4.0 — Include top suggestions in iMessage
+        # v4.0/v5.0 — Include top suggestions + tracker hint in iMessage
         tips_line = ""
         if suggestions:
             top_tips = suggestions[:2]
             tips_line = "\n\n💡 Tips:"
             for tip in top_tips:
                 tips_line += f"\n{tip['icon']} {tip['text']}"
+
+        insight_line = ""
+        if price_insight:
+            insight_line = f"\n📈 {price_insight}"
+
+        tracker_line = ""
+        if tracker_suggestion:
+            tracker_line = f"\n{tracker_suggestion}"
 
         imsg = (
             f"✅ Flight report ready!\n\n"
@@ -1881,7 +2482,9 @@ def search_flights_report(
             f"📊 Found {len(flights)} options\n"
             f"💰 Cheapest: {cheapest.get('price', '?')} — {cheapest.get('airline', '?')} ({cheapest.get('stops', '?')})"
             f"{nonstop_line}"
-            f"{tips_line}\n\n"
+            f"{insight_line}"
+            f"{tips_line}"
+            f"{tracker_line}\n\n"
             f"🔗 Book cheapest: {cheapest_link}"
         )
         if emailed:
@@ -1898,12 +2501,62 @@ def search_flights_report(
 #  PHASE 3 — Cheapest Dates (Smart 6-Month Sampling)
 # ═══════════════════════════════════════════════════════
 
+def _search_single_date(args: tuple) -> dict:
+    """Worker function for parallel cheapest dates scanning."""
+    origin, destination, dt, trip_type, cabin, stops = args
+    date_str = dt.strftime("%Y-%m-%d")
+    try:
+        r = search_flights(
+            origin=origin, destination=destination,
+            depart_date=date_str, trip_type=trip_type,
+            cabin=cabin, stops=stops,
+        )
+        flights = r.get("flights", [])
+        gf_link = _build_booking_link(origin, destination, date_str, trip_type=trip_type)
+        if flights:
+            best = flights[0]
+            price = _price_num(best.get("price", "$99999"))
+            airline_link = _get_airline_booking_url(
+                best.get("airline", ""), origin, destination, date_str)
+            booking_link = airline_link or best.get("booking_link", gf_link)
+            result = {
+                "date": date_str, "day": dt.strftime("%A"),
+                "price": best.get("price", "—"), "price_num": price,
+                "airline": best.get("airline", "—"), "stops": best.get("stops", "—"),
+                "duration": best.get("duration", "—"), "depart_time": best.get("depart_time", "—"),
+                "options": len(flights), "booking_link": booking_link,
+                "price_insight": r.get("price_insight", ""),
+            }
+            print(f"      📅 {date_str}: {best.get('price', '?')} ({best.get('airline', '?')})")
+            return result
+        else:
+            print(f"      📅 {date_str}: no results")
+            return {
+                "date": date_str, "day": dt.strftime("%A"),
+                "price": "N/A", "price_num": 99999, "airline": "—", "stops": "—",
+                "duration": "—", "depart_time": "—", "options": 0, "booking_link": gf_link,
+                "price_insight": "",
+            }
+    except Exception as e:
+        print(f"      📅 {date_str}: error ({e})")
+        return {
+            "date": date_str, "day": dt.strftime("%A"),
+            "price": "Error", "price_num": 99999, "airline": "—", "stops": "—",
+            "duration": "—", "depart_time": "—", "options": 0,
+            "booking_link": _build_booking_link(origin, destination, date_str, trip_type=trip_type),
+            "price_insight": "",
+        }
+
+
 def find_cheapest_dates(
     origin: str, destination: str, start_date: str,
     end_date: str = "", trip_type: str = "one_way",
     cabin: str = "economy", stops: str = "any", email_to: str = "",
 ) -> dict:
     """Find the cheapest day to fly within a date range (up to 6 months).
+
+    v5.0: Parallel scanning with ThreadPoolExecutor (2 workers to avoid
+    overwhelming CDP). Cache integration means repeated dates are instant.
 
     Smart sampling:
       ≤14 days  → every day       (~14 searches)
@@ -1948,50 +2601,30 @@ def find_cheapest_dates(
     if dates_to_search[-1] != end:
         dates_to_search.append(end)
 
-    print(f"    ✈️ Scanning {len(dates_to_search)} dates: {origin_code}→{dest_code} ({start.strftime('%b %d')} – {end.strftime('%b %d, %Y')})")
+    print(f"    ✈️ Scanning {len(dates_to_search)} dates (parallel): {origin_code}→{dest_code} ({start.strftime('%b %d')} – {end.strftime('%b %d, %Y')})")
 
+    # Build worker args
+    worker_args = [(origin, destination, dt, trip_type, cabin, stops) for dt in dates_to_search]
+
+    # Phase 14: Parallel scanning with 2 workers (safe for CDP)
     date_results = []
-    for dt in dates_to_search:
-        date_str = dt.strftime("%Y-%m-%d")
-        print(f"      📅 {date_str}...", end=" ", flush=True)
-        try:
-            r = search_flights(
-                origin=origin, destination=destination,
-                depart_date=date_str, trip_type=trip_type,
-                cabin=cabin, stops=stops,
-            )
-            flights = r.get("flights", [])
-            gf_link = _build_booking_link(origin, destination, date_str, trip_type=trip_type)
-            if flights:
-                best = flights[0]
-                price = _price_num(best.get("price", "$99999"))
-                # Use airline-specific booking link, fall back to Google Flights
-                airline_link = _get_airline_booking_url(
-                    best.get("airline", ""), origin, destination, date_str)
-                booking_link = airline_link or best.get("booking_link", gf_link)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(_search_single_date, args): args[2] for args in worker_args}
+        for future in as_completed(futures):
+            try:
+                result = future.result(timeout=120)
+                if result:
+                    date_results.append(result)
+            except Exception as e:
+                dt = futures[future]
+                print(f"      📅 {dt.strftime('%Y-%m-%d')}: worker error ({e})")
                 date_results.append({
-                    "date": date_str, "day": dt.strftime("%A"),
-                    "price": best.get("price", "—"), "price_num": price,
-                    "airline": best.get("airline", "—"), "stops": best.get("stops", "—"),
-                    "duration": best.get("duration", "—"), "depart_time": best.get("depart_time", "—"),
-                    "options": len(flights), "booking_link": booking_link,
+                    "date": dt.strftime("%Y-%m-%d"), "day": dt.strftime("%A"),
+                    "price": "Error", "price_num": 99999, "airline": "—", "stops": "—",
+                    "duration": "—", "depart_time": "—", "options": 0,
+                    "booking_link": _build_booking_link(origin, destination, dt.strftime("%Y-%m-%d"), trip_type=trip_type),
+                    "price_insight": "",
                 })
-                print(f"{best.get('price', '?')} ({best.get('airline', '?')})")
-            else:
-                date_results.append({
-                    "date": date_str, "day": dt.strftime("%A"),
-                    "price": "N/A", "price_num": 99999, "airline": "—", "stops": "—",
-                    "duration": "—", "depart_time": "—", "options": 0, "booking_link": gf_link,
-                })
-                print("no results")
-        except Exception as e:
-            print(f"error: {e}")
-            date_results.append({
-                "date": date_str, "day": dt.strftime("%A"),
-                "price": "Error", "price_num": 99999, "airline": "—", "stops": "—",
-                "duration": "—", "depart_time": "—", "options": 0,
-                "booking_link": _build_booking_link(origin, destination, date_str, trip_type=trip_type),
-            })
 
     if not date_results:
         return {"success": False, "content": "❌ No results for any date in range", "dates": []}
