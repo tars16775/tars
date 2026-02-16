@@ -842,12 +842,12 @@ class ToolExecutor:
         if agent_type == "dev":
             agent_kwargs["imessage_sender"] = self.sender
             agent_kwargs["imessage_reader"] = self.reader
-            agent_kwargs["max_steps"] = 60  # Dev sessions are longer
+            agent_kwargs["max_steps"] = 80  # Dev Agent v2: PRD sessions need more steps
         agent = agent_class(**agent_kwargs)
 
         agent_timeout = 300  # 5 minutes max per agent deployment
         if agent_type == "dev":
-            agent_timeout = 1800  # 30 minutes for interactive dev sessions
+            agent_timeout = 3600  # 60 minutes for autonomous PRD-to-production sessions
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(agent.run, task, context)

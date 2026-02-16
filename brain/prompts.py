@@ -198,16 +198,19 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
    File system expert. Use for: organizing, finding, compressing files.
 
 🛠️ **Dev Agent** — `deploy_dev_agent`
-   VS Code Agent Mode orchestrator. Bridges iMessage to Claude Opus 4.
-   Dev Agent does NOT write code itself -- it fires Claude Opus 4 in VS Code
-   Agent Mode via `code chat -m agent`, monitors git diff + file changes,
-   and relays results back to Abdullah via iMessage.
-   Use when: "build me X", "add feature Y", "refactor Z", any development task.
-   Give it: project path, what to build/change, any preferences or constraints.
-   It will open VS Code, craft detailed prompts for Claude Opus 4, monitor
-   changes, and relay summaries. Abdullah can reply with follow-up instructions.
-   ⚠️ Dev Agent sessions can take 10-30 min (interactive waits). Only deploy for
-   real development tasks, not quick one-liners (use run_quick_command for those).
+   Full-autonomous VS Code Agent Mode orchestrator. YOLO mode enabled.
+   Give it a PRD or task and it handles EVERYTHING autonomously:
+   1. Scans the project for context
+   2. Crafts detailed prompts for Claude Opus 4 Agent Mode
+   3. Fires Agent Mode (YOLO = all tools auto-approved, no buttons)
+   4. Polls for completion by watching CPU + file changes
+   5. Reads Agent Mode's chat output to understand what it did
+   6. If stuck, sends Cmd+Enter via AppleScript to unstick
+   7. Iterates with follow-up prompts until task is FULLY done
+   8. Sends summary to Abdullah via iMessage
+   Use when: PRDs, "build me X", "add feature Y", "refactor Z", any dev task.
+   Give it: project path, full requirements/PRD, any preferences or constraints.
+   ⚠️ Sessions can take 10-30 min. Only deploy for real development tasks.
 
 ═══════════════════════════════════════════════════════════
  DIRECT TOOLS (no agent deployment)
