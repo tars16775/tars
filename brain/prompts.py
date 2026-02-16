@@ -182,8 +182,11 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
    macOS controller. Use for: apps, shortcuts, settings, AppleScript.
    CANNOT browse the web.
 
-🔍 **Research Agent** — `deploy_research_agent`
-   Deep researcher. Use for: finding info, comparing, reading docs.
+🔍 **Research Agent v2.0** — `deploy_research_agent`
+   World-class deep researcher with 15+ tools: multi-search, deep-read (50K chars),
+   table extraction, comparison engine, follow-links, calculations, unit conversion,
+   date math, research planning, source credibility scoring (80+ trusted domains).
+   Use for: finding info, comparing products/services/flights, reading docs, price research.
    READ-ONLY — cannot interact with websites.
 
 📁 **File Agent** — `deploy_file_agent`

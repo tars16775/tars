@@ -128,11 +128,11 @@ TARS_TOOLS = [
     },
     {
         "name": "deploy_research_agent",
-        "description": "Deploy Research Agent for information gathering.\n\nCapabilities: Google search, read web pages, extract specific info, cross-reference sources, compile findings.\n\nREAD-ONLY — cannot interact with websites (no clicking, no form filling, no signups).\nUse for finding info BEFORE deploying other agents.\n\n✅ GOOD: 'Research the cheapest flights from Tampa to NYC in March 2026. Check Google Flights, Kayak, and Skyscanner. Return: airline, price, dates, and booking URL for top 3 options.'\n❌ BAD: 'Book me a flight' — use browser agent for booking",
+        "description": "Deploy Research Agent v2.0 — world-class deep researcher and analyst.\n\n15+ specialized tools: multi_search (2-5 queries at once), deep_read (scroll through 50K+ char pages), extract_table (pricing/specs/schedules), compare (side-by-side tables), follow_links (discover subpages), calculate (math/percentages), convert (unit conversion), date_calc (date arithmetic), research_plan (track progress), score_sources (credibility scoring).\n\nSource credibility scoring: 3-tier domain authority system (80+ trusted domains). Notes with confidence levels (high/medium/low) and source attribution.\n\nREAD-ONLY — cannot interact with websites (no clicking, no form filling, no signups).\nUse for finding info BEFORE deploying other agents.\n\n✅ GOOD: 'Research the cheapest flights from Tampa to NYC in March 2026. Check Google Flights, Kayak, and Skyscanner. Compare top 3 options: airline, price, dates, duration, stops. Include booking URLs.'\n✅ GOOD: 'Compare MacBook Pro vs Dell XPS vs ThinkPad X1. Research specs, prices, reviews from 3+ sources. Build comparison table.'\n❌ BAD: 'Book me a flight' — use browser agent for booking",
         "input_schema": {
             "type": "object",
             "properties": {
-                "task": {"type": "string", "description": "Research question: what info to find, how many sources to check, what details needed."}
+                "task": {"type": "string", "description": "Research question: what info to find, how many sources to check, what details needed. Be specific about deliverables."}
             },
             "required": ["task"]
         }
