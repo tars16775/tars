@@ -148,6 +148,17 @@ TARS_TOOLS = [
             "required": ["task"]
         }
     },
+    {
+        "name": "deploy_dev_agent",
+        "description": "Deploy Dev Agent — interactive senior developer over iMessage. Like GitHub Copilot Agent Mode, but controlled from your phone.\n\nThe Dev Agent TALKS to Abdullah during development:\n- Scans the project to understand architecture, stack, conventions\n- Presents a plan and asks for approval via iMessage\n- Implements changes (multi-file, surgical edits)\n- Runs tests automatically (fix → retest loop)\n- Shows diffs for review before risky changes\n- Commits at milestones, asks before pushing\n- Waits for user feedback and adjusts course\n\nUnlike Coder Agent (single-shot, no communication), Dev Agent is INTERACTIVE — it asks questions, proposes plans, sends progress updates, and waits for direction.\n\n⚠️ Sessions can take 10-30 min (user interaction wait time). Only deploy for real development work.\n\n✅ GOOD: 'Add dark mode toggle to the settings page in /Users/X/projects/myapp. Use Tailwind. The settings component is in src/components/Settings.tsx'\n✅ GOOD: 'Refactor the auth module in /Users/X/api to use JWT instead of sessions. There are 3 route files that need updating.'\n✅ GOOD: 'Build a REST API for the todo app at /Users/X/todo-api. Use Express + TypeScript. Include CRUD endpoints and tests.'\n❌ BAD: 'Write a hello world script' — too simple, use run_quick_command\n❌ BAD: 'Fix this one-line bug' — use deploy_coder_agent for quick fixes",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "Development task: project path, what to build/change, tech preferences, constraints. Include the full project path so the agent can scan it."}
+            },
+            "required": ["task"]
+        }
+    },
 
     # ═══════════════════════════════════════
     #  Communication

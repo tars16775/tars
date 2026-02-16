@@ -32,6 +32,7 @@ from agents.coder_agent import CoderAgent
 from agents.system_agent import SystemAgent
 from agents.research_agent import ResearchAgent
 from agents.file_agent import FileAgent
+from agents.dev_agent import DevAgent
 from agents.comms import agent_comms
 from memory.agent_memory import AgentMemory
 from hands.terminal import run_terminal
@@ -50,6 +51,7 @@ AGENT_CLASSES = {
     "system": SystemAgent,
     "research": ResearchAgent,
     "file": FileAgent,
+    "dev": DevAgent,
 }
 
 # Hard limit: max agent deployments per brain task cycle
@@ -161,6 +163,9 @@ class ToolExecutor:
 
         elif tool_name == "deploy_file_agent":
             return self._deploy_agent("file", inp["task"])
+
+        elif tool_name == "deploy_dev_agent":
+            return self._deploy_agent("dev", inp["task"])
 
         # ─── Direct Tools ────────────────────────
         elif tool_name == "send_imessage":
@@ -803,15 +808,23 @@ class ToolExecutor:
                 pass
 
         # ── Create and run the agent (with timeout) ──
-        agent = agent_class(
+        agent_kwargs = dict(
             llm_client=self.llm_client,
             model=self.heavy_model,
             max_steps=40,
             phone=self.phone,
             kill_event=self._kill_event,
         )
+        # Dev agent needs iMessage for interactive approval loop
+        if agent_type == "dev":
+            agent_kwargs["imessage_sender"] = self.sender
+            agent_kwargs["imessage_reader"] = self.reader
+            agent_kwargs["max_steps"] = 60  # Dev sessions are longer
+        agent = agent_class(**agent_kwargs)
 
         agent_timeout = 300  # 5 minutes max per agent deployment
+        if agent_type == "dev":
+            agent_timeout = 1800  # 30 minutes for interactive dev sessions
         try:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(agent.run, task, context)
