@@ -344,6 +344,13 @@ class TARS:
                 # Log the result
                 self.logger.info(f"Cycle complete. Response: {response[:200]}")
 
+                # ── Send the brain's final response to the user via iMessage ──
+                if response and not response.startswith("🛑"):
+                    try:
+                        self.imessage_sender.send(response[:1500])
+                    except Exception as e:
+                        self.logger.warning(f"Failed to send response via iMessage: {e}")
+
                 # ── Safety net: if brain returned an error, notify user ──
                 if response and (response.startswith("❌") or response.startswith("⚠️")):
                     self.logger.warning(f"Brain returned error: {response[:200]}")

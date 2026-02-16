@@ -29,6 +29,17 @@ from datetime import datetime, timedelta
 from hands.cdp import CDP
 
 
+def _load_config():
+    """Load TARS config for iMessage sender."""
+    import yaml
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+    try:
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return {"imessage": {"owner_phone": "+18137345204", "rate_limit": 3, "max_message_length": 1600}}
+
+
 class _FlightSearchTimeout(Exception):
     """Raised when flight search exceeds time limit."""
     pass
@@ -1033,7 +1044,7 @@ def search_flights_report(
 
     try:
         from voice.imessage_send import IMessageSender
-        sender = IMessageSender()
+        sender = IMessageSender(_load_config())
         nonstop_line = ""
         if nonstops:
             nonstop_line = f"\n✈️ Best nonstop: {best_ns.get('price', '?')} — {best_ns.get('airline', '?')} ({best_ns.get('duration', '?')})"
@@ -1205,7 +1216,7 @@ def find_cheapest_dates(
 
     try:
         from voice.imessage_send import IMessageSender
-        sender = IMessageSender()
+        sender = IMessageSender(_load_config())
         imsg = (
             f"✅ Cheapest dates report ready!\n\n"
             f"🛫 {origin_code} → {dest_code}\n"
@@ -1326,7 +1337,7 @@ def track_flight_price(
 
     try:
         from voice.imessage_send import IMessageSender
-        sender = IMessageSender()
+        sender = IMessageSender(_load_config())
         imsg = (
             f"🎯 Flight price tracker activated!\n\n"
             f"🛫 {origin_code} → {dest_code}\n"
@@ -1404,7 +1415,7 @@ def _send_price_alert(tracker, current_price, airline, booking_link):
 
     try:
         from voice.imessage_send import IMessageSender
-        sender = IMessageSender()
+        sender = IMessageSender(_load_config())
         savings = target - current_price if current_price < target else 0
         imsg = (
             f"🔔 PRICE ALERT!\n\n"
