@@ -189,14 +189,18 @@ class TARSServer:
             elif msg_type == "send_task":
                 task = data.get("task", "")
                 if task and self.tars:
-                    # Require passphrase for remote task submission
-                    expected = (self.tars.config.get("relay", {}).get("passphrase") or "").strip()
-                    if not expected:
-                        await websocket.send(json.dumps({"type": "error", "data": {"message": "Rejected: relay passphrase not configured"}}))
-                        return
-                    if data.get("passphrase") != expected:
-                        await websocket.send(json.dumps({"type": "error", "data": {"message": "Unauthorized: invalid passphrase"}}))
-                        return
+                    # Check if connection is from localhost (tunnel) — skip passphrase
+                    remote = websocket.remote_address if hasattr(websocket, 'remote_address') else None
+                    is_local = remote and remote[0] in ("127.0.0.1", "::1", "localhost")
+                    if not is_local:
+                        # Remote connections require passphrase
+                        expected = (self.tars.config.get("relay", {}).get("passphrase") or "").strip()
+                        if not expected:
+                            await websocket.send(json.dumps({"type": "error", "data": {"message": "Rejected: relay passphrase not configured"}}))
+                            return
+                        if data.get("passphrase") != expected:
+                            await websocket.send(json.dumps({"type": "error", "data": {"message": "Unauthorized: invalid passphrase"}}))
+                            return
                     event_bus.emit("task_received", {"task": task, "source": "dashboard"})
                     # Process in a thread so we don't block
                     threading.Thread(target=self.tars._process_task, args=(task,), daemon=True).start()

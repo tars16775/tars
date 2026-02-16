@@ -1,11 +1,12 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { useTars } from '../context/ConnectionContext'
-import { MessageSquare } from 'lucide-react'
+import { MessageSquare, Send } from 'lucide-react'
 import clsx from 'clsx'
 
 export default function MessagePanel() {
-  const { messages } = useTars()
+  const { messages, sendMessage, connectionState } = useTars()
   const containerRef = useRef<HTMLDivElement>(null)
+  const [input, setInput] = useState('')
 
   // Auto-scroll
   useEffect(() => {
@@ -13,6 +14,20 @@ export default function MessagePanel() {
       containerRef.current.scrollTop = containerRef.current.scrollHeight
     }
   }, [messages])
+
+  const handleSend = useCallback(() => {
+    const text = input.trim()
+    if (!text || connectionState !== 'connected') return
+    sendMessage(text)
+    setInput('')
+  }, [input, sendMessage, connectionState])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }, [handleSend])
 
   // Group messages by time proximity (60s window)
   const groupedMessages = messages.reduce<Array<{ messages: typeof messages; showTime: boolean }>>((acc, msg, i) => {
@@ -43,7 +58,7 @@ export default function MessagePanel() {
           <div className="flex flex-col items-center justify-center h-full text-slate-600">
             <MessageSquare size={28} className="mb-2 opacity-30" />
             <p className="text-[10px]">No conversations yet</p>
-            <p className="text-[9px] text-slate-700 mt-1">iMessage conversations will appear here</p>
+            <p className="text-[9px] text-slate-700 mt-1">Send a message to start chatting</p>
           </div>
         ) : (
           groupedMessages.map((group, gi) => (
@@ -77,6 +92,27 @@ export default function MessagePanel() {
             </div>
           ))
         )}
+      </div>
+
+      {/* Chat input */}
+      <div className="px-2 py-2 border-t border-panel-border shrink-0">
+        <div className="flex items-center gap-1.5 bg-void-800 border border-panel-border rounded-xl px-2.5 py-1.5 focus-within:border-signal-blue/50 focus-within:shadow-glow-blue transition-all">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Message TARS..."
+            className="flex-1 bg-transparent text-xs text-star-white placeholder-slate-600 outline-none min-w-0"
+          />
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() || connectionState !== 'connected'}
+            className="shrink-0 text-signal-blue hover:text-signal-blue/80 disabled:text-slate-700 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send size={12} />
+          </button>
+        </div>
       </div>
     </div>
   )

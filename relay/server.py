@@ -247,7 +247,7 @@ async def send_command(request: Request):
     body = await request.json()
     cmd_type = body.get("command", "")
 
-    if cmd_type not in ("start_tars", "stop_tars", "kill_tars", "restart_tars", "get_process_status", "send_task"):
+    if cmd_type not in ("start_tars", "stop_tars", "kill_tars", "restart_tars", "get_process_status", "send_task", "send_message"):
         raise HTTPException(status_code=400, detail=f"Unknown command: {cmd_type}")
 
     if not state.tunnel:
