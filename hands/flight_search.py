@@ -772,6 +772,30 @@ def search_flights_report(
 
     content = result["content"] + f"\n\n📊 Excel saved: {excel_path}{email_msg}"
 
+    # ── Step 4: Notify user via iMessage ──
+    try:
+        from voice.imessage_send import IMessageSender
+        sender = IMessageSender()
+        nonstop_line = ""
+        if nonstops:
+            best_ns = nonstops[0]
+            nonstop_line = f"\n✈️ Best nonstop: {best_ns.get('price', '?')} — {best_ns.get('airline', '?')} ({best_ns.get('duration', '?')})"
+        imsg = (
+            f"✅ Flight report ready!\n\n"
+            f"🛫 {origin_code} → {dest_code}\n"
+            f"📅 {depart}" + (f" → {_parse_date(return_date)}" if return_date else "") + "\n"
+            f"📊 Found {len(flights)} options\n"
+            f"💰 Cheapest: {cheapest.get('price', '?')} — {cheapest.get('airline', '?')} ({cheapest.get('stops', '?')})"
+            f"{nonstop_line}"
+        )
+        if emailed:
+            imsg += f"\n\n📧 Report emailed to {email_to}"
+        else:
+            imsg += f"\n\n📊 Excel saved to ~/Documents/TARS_Reports/"
+        sender.send(imsg)
+    except Exception:
+        pass  # Don't fail the pipeline over notification
+
     return {
         "success": True,
         "content": content,
@@ -1003,6 +1027,30 @@ def find_cheapest_dates(
                 report += f"\n⚠️ Email failed: {mail_result.get('content', '')}"
         except Exception as e:
             report += f"\n⚠️ Email failed: {e}"
+
+    # ── Notify user via iMessage ──
+    try:
+        from voice.imessage_send import IMessageSender
+        sender = IMessageSender()
+        imsg = (
+            f"✅ Cheapest dates report ready!\n\n"
+            f"🛫 {origin_code} → {dest_code}\n"
+            f"📅 {start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}\n"
+            f"📊 Scanned {len(date_results)} dates\n\n"
+            f"🏆 Cheapest: {cheapest['date']} ({cheapest['day']}) — "
+            f"{cheapest['price']} on {cheapest['airline']}"
+        )
+        if len(date_results) >= 3:
+            imsg += "\n\n💡 Top 3:"
+            for i, dr in enumerate(date_results[:3], 1):
+                imsg += f"\n  {i}. {dr['date']} — {dr['price']} ({dr['airline']})"
+        if emailed:
+            imsg += f"\n\n📧 Report emailed to {email_to}"
+        else:
+            imsg += f"\n\n📊 Excel saved to ~/Documents/TARS_Reports/"
+        sender.send(imsg)
+    except Exception:
+        pass  # Don't fail the pipeline over notification
 
     return {
         "success": True,
