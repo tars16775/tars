@@ -1,16 +1,17 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       TARS — Flight Engine v2.0 (10-Phase Transformation)    ║
+║       TARS — Flight Engine v3.0 (Direct Airline Booking)     ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
 ║  Phase 1:  Core Engine — Google Flights URL builder, parser  ║
-║  Phase 2:  Booking Links — direct Google Flights link/flight ║
+║  Phase 2:  Booking Links — Google Flights link per flight    ║
+║  Phase 2B: Airline Direct — 25+ airline deep link generator  ║
 ║  Phase 3:  Smart Sampling — 6-month range (weekly cadence)   ║
 ║  Phase 4:  HTML Email Templates — airline-grade design       ║
 ║  Phase 5:  Enhanced Excel — hyperlinks, conditional color    ║
 ║  Phase 6:  Price Tracker — persistent JSON DB for routes     ║
 ║  Phase 7:  Alert Engine — background price checks + alerts   ║
-║  Phase 8:  Rich iMessage — booking links in notifications    ║
+║  Phase 8:  Rich HTML Email — properly rendered via Mail.app  ║
 ║  Phase 9:  Pipeline Integration — report + email + notify    ║
 ║  Phase 10: Tool Registration — brain tools + executor        ║
 ║                                                              ║
@@ -292,6 +293,276 @@ def _build_booking_link(origin: str, destination: str, depart_date: str,
 
 
 # ═══════════════════════════════════════════════════════
+#  PHASE 2B — Airline Direct Booking URL Generator
+# ═══════════════════════════════════════════════════════
+
+# Mapping of airline → their flight search/booking URL templates
+# These deep links go directly to each airline's booking page with route pre-filled
+AIRLINE_BOOKING_URLS = {
+    "delta": {
+        "base": "https://www.delta.com/flight-search/book-a-flight",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.delta.com/flight-search/book-a-flight?cacheKeySuffix=a"
+            f"&departureDate={dep}&returnDate={ret or dep}"
+            f"&originCity={o}&destinationCity={d}&paxCount=1&searchByCabin=true&cabinSelect=MAIN"
+        ),
+    },
+    "united": {
+        "base": "https://www.united.com/en/us",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.united.com/ual/en/us/flight-search/book-a-flight/results/rev"
+            f"?f={o}&t={d}&d={dep}&r={ret or dep}&sc=7&px=1&taxng=1&newHP=True&clm=7&st=bestmatches"
+        ),
+    },
+    "american": {
+        "base": "https://www.aa.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.aa.com/booking/search?locale=en_US"
+            f"&pax=1&adult=1&type={'roundTrip' if ret else 'oneWay'}"
+            f"&searchType=revenue&origin={o}&destination={d}"
+            f"&departDate={dep}" + (f"&returnDate={ret}" if ret else "")
+        ),
+    },
+    "southwest": {
+        "base": "https://www.southwest.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.southwest.com/air/booking/select.html"
+            f"?originationAirportCode={o}&destinationAirportCode={d}"
+            f"&departureDate={dep}" + (f"&returnDate={ret}" if ret else "")
+            + f"&adultPassengersCount=1&tripType={'roundtrip' if ret else 'oneway'}"
+        ),
+    },
+    "jetblue": {
+        "base": "https://www.jetblue.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.jetblue.com/booking/flights"
+            f"?from={o}&to={d}&depart={dep}"
+            + (f"&return={ret}" if ret else "")
+            + f"&pax=1&isMultiCity=false&isRoundTrip={'true' if ret else 'false'}"
+        ),
+    },
+    "spirit": {
+        "base": "https://www.spirit.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.spirit.com/book/flights"
+            f"?orgCode={o}&desCode={d}&departDate={dep}"
+            + (f"&returnDate={ret}" if ret else "")
+            + f"&adults=1&tripType={'RT' if ret else 'OW'}"
+        ),
+    },
+    "frontier": {
+        "base": "https://www.flyfrontier.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://booking.flyfrontier.com/Flight/Select"
+            f"?o1={o}&d1={d}&dd1={dep}"
+            + (f"&dd2={ret}" if ret else "")
+            + f"&ADT=1&mon=true"
+        ),
+    },
+    "alaska": {
+        "base": "https://www.alaskaair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.alaskaair.com/shopping/flights"
+            f"?A=1&prior=form&ShoppingMethod=Traditional"
+            f"&FO={o}&FD={d}&FDD={dep}"
+            + (f"&FRD={ret}" if ret else "")
+            + f"&RT={'true' if ret else 'false'}"
+        ),
+    },
+    "hawaiian": {
+        "base": "https://www.hawaiianairlines.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.hawaiianairlines.com/book/flights"
+        ),
+    },
+    "air canada": {
+        "base": "https://www.aircanada.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.aircanada.com/booking/search"
+            f"?org0={o}&dest0={d}&departureDate0={dep}"
+            + (f"&org1={d}&dest1={o}&departureDate1={ret}" if ret else "")
+            + f"&ADT=1&tripType={'RT' if ret else 'OW'}&lang=en-CA"
+        ),
+    },
+    "british airways": {
+        "base": "https://www.britishairways.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.britishairways.com/travel/book/public/en_us"
+            f"#/flightList?origin={o}&destination={d}&adt=1"
+            f"&departureDate={dep}" + (f"&returnDate={ret}" if ret else "")
+        ),
+    },
+    "lufthansa": {
+        "base": "https://www.lufthansa.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.lufthansa.com/us/en/flight-search"
+            f"?origin={o}&destination={d}&outDate={dep}"
+            + (f"&retDate={ret}" if ret else "")
+            + f"&pax=1&type={'RT' if ret else 'OW'}"
+        ),
+    },
+    "emirates": {
+        "base": "https://www.emirates.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.emirates.com/us/english/book/flights/"
+        ),
+    },
+    "qatar airways": {
+        "base": "https://www.qatarairways.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.qatarairways.com/en/booking.html"
+            f"?from={o}&to={d}&departing={dep}"
+            + (f"&returning={ret}" if ret else "")
+            + f"&adults=1&children=0&infants=0"
+        ),
+    },
+    "turkish airlines": {
+        "base": "https://www.turkishairlines.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.turkishairlines.com/en-us/flights/"
+        ),
+    },
+    "singapore airlines": {
+        "base": "https://www.singaporeair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.singaporeair.com/en_UK/plan-and-book/booking/"
+        ),
+    },
+    "air france": {
+        "base": "https://www.airfrance.us",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.airfrance.us/search/open-dates"
+            f"?pax=1:0:0:0:0:0:0:0"
+            f"&origin={o}&destination={d}&outboundDate={dep}"
+            + (f"&inboundDate={ret}" if ret else "")
+        ),
+    },
+    "klm": {
+        "base": "https://www.klm.us",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.klm.us/search/open-dates"
+            f"?pax=1:0:0:0:0:0:0:0"
+            f"&origin={o}&destination={d}&outboundDate={dep}"
+            + (f"&inboundDate={ret}" if ret else "")
+        ),
+    },
+    "sun country": {
+        "base": "https://www.suncountry.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.suncountry.com/book/flights"
+        ),
+    },
+    "breeze": {
+        "base": "https://www.flybreeze.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.flybreeze.com/home/booking"
+        ),
+    },
+    "allegiant": {
+        "base": "https://www.allegiantair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.allegiantair.com/flights"
+        ),
+    },
+    "avianca": {
+        "base": "https://www.avianca.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.avianca.com/en/booking/"
+        ),
+    },
+    "copa": {
+        "base": "https://www.copaair.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.copaair.com/en-us/web/booking"
+        ),
+    },
+    "volaris": {
+        "base": "https://www.volaris.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.volaris.com/en/flights"
+        ),
+    },
+    "westjet": {
+        "base": "https://www.westjet.com",
+        "search": lambda o, d, dep, ret: (
+            f"https://www.westjet.com/en-ca/book-trip/flights"
+        ),
+    },
+}
+
+# Aliases for fuzzy airline matching
+AIRLINE_ALIASES = {
+    "delta air lines": "delta",
+    "delta airlines": "delta",
+    "united airlines": "united",
+    "american airlines": "american",
+    "southwest airlines": "southwest",
+    "jetblue airways": "jetblue",
+    "spirit airlines": "spirit",
+    "frontier airlines": "frontier",
+    "alaska airlines": "alaska",
+    "hawaiian airlines": "hawaiian",
+    "sun country airlines": "sun country",
+    "breeze airways": "breeze",
+    "allegiant air": "allegiant",
+    "ana": "ana",
+    "jal": "jal",
+    "japan airlines": "jal",
+    "all nippon airways": "ana",
+}
+
+
+def _get_airline_booking_url(airline_name: str, origin: str, destination: str,
+                              depart_date: str, return_date: str = "") -> str:
+    """Get a direct airline booking URL for the given flight details.
+
+    Returns airline-specific deep link if available, otherwise falls back
+    to a Google Flights link that filters for that specific airline.
+    """
+    if not airline_name or airline_name == "—":
+        return ""
+
+    key = airline_name.strip().lower()
+    # Check aliases first
+    if key in AIRLINE_ALIASES:
+        key = AIRLINE_ALIASES[key]
+
+    # Direct match
+    if key in AIRLINE_BOOKING_URLS:
+        try:
+            origin_code = _resolve_airport(origin)
+            dest_code = _resolve_airport(destination)
+            dep = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
+            ret = ""
+            if return_date:
+                ret = _parse_date(return_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', return_date) else return_date
+            return AIRLINE_BOOKING_URLS[key]["search"](origin_code, dest_code, dep, ret)
+        except Exception:
+            return AIRLINE_BOOKING_URLS[key]["base"]
+
+    # Partial match
+    for airline_key in AIRLINE_BOOKING_URLS:
+        if airline_key in key or key in airline_key:
+            try:
+                origin_code = _resolve_airport(origin)
+                dest_code = _resolve_airport(destination)
+                dep = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
+                ret = ""
+                if return_date:
+                    ret = _parse_date(return_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', return_date) else return_date
+                return AIRLINE_BOOKING_URLS[airline_key]["search"](origin_code, dest_code, dep, ret)
+            except Exception:
+                return AIRLINE_BOOKING_URLS[airline_key]["base"]
+
+    # Fallback: Google Flights filtered by airline name
+    origin_code = _resolve_airport(origin)
+    dest_code = _resolve_airport(destination)
+    dep = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
+    q = f"flights from {origin_code} to {dest_code} on {dep} {airline_name}"
+    return f"https://www.google.com/travel/flights?q={urllib.parse.quote_plus(q)}"
+
+
+# ═══════════════════════════════════════════════════════
 #  PHASE 1 — Flight Data Extraction
 # ═══════════════════════════════════════════════════════
 
@@ -318,12 +589,31 @@ def _extract_flight_data(page_text: str) -> list:
             duration = duration_match.group(1).strip() if duration_match else ""
             airline = ""
             common_airlines = [
+                # US Carriers
                 "Delta", "United", "American", "Southwest", "JetBlue", "Spirit",
-                "Frontier", "Alaska", "Hawaiian", "Sun Country", "Breeze",
-                "Air Canada", "WestJet", "British Airways", "Lufthansa",
-                "Emirates", "Qatar Airways", "Singapore Airlines", "Turkish Airlines",
-                "Air France", "KLM", "Iberia", "Ryanair", "EasyJet",
-                "Allegiant", "Avianca", "Copa", "Volaris", "VivaAerobus",
+                "Frontier", "Alaska", "Hawaiian", "Sun Country", "Breeze", "Allegiant",
+                # Canadian
+                "Air Canada", "WestJet",
+                # European
+                "British Airways", "Lufthansa", "Air France", "KLM", "Iberia",
+                "Ryanair", "EasyJet", "Norwegian", "SAS", "Swiss", "Austrian",
+                "TAP Portugal", "Aer Lingus", "Finnair", "Icelandair", "Condor",
+                # Middle East
+                "Emirates", "Qatar Airways", "Turkish Airlines", "Etihad", "Saudia",
+                "Royal Jordanian", "Oman Air", "Gulf Air",
+                # Asian
+                "Singapore Airlines", "ANA", "JAL", "Japan Airlines",
+                "All Nippon Airways", "Cathay Pacific", "Korean Air",
+                "Asiana", "China Airlines", "EVA Air", "Thai Airways",
+                "Vietnam Airlines", "Philippine Airlines", "Malaysia Airlines",
+                "Garuda Indonesia", "Air India",
+                # Latin American
+                "Avianca", "Copa", "Volaris", "VivaAerobus", "LATAM",
+                "Aeromexico", "GOL", "Azul",
+                # Oceania
+                "Qantas", "Air New Zealand", "Fiji Airways",
+                # Cargo/Charter (sometimes shown)
+                "Icelandair", "WOW", "Norse Atlantic",
             ]
             for li in range(max(0, i - 12), i):
                 line_text = lines[li].strip()
@@ -425,6 +715,7 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
         elif f.get("stops", "").lower() == "nonstop" and f == (best_nonstop or {}):
             badge = '<span style="background:#2563EB;color:#fff;font-size:10px;padding:2px 8px;border-radius:12px;margin-left:6px;">BEST NONSTOP</span>'
         stops_color = "#059669" if "nonstop" in f.get("stops", "").lower() else "#64748B"
+        booking_url = f.get("booking_link", search_url)
         flight_rows += f"""
         <tr style="background:{bg};">
           <td style="padding:14px 16px;border-bottom:1px solid #F1F5F9;font-weight:600;color:{price_color};font-size:16px;">{f.get('price', '—')}{badge}</td>
@@ -438,7 +729,12 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
           <td style="padding:14px 16px;border-bottom:1px solid #F1F5F9;">
             <span style="color:{stops_color};font-weight:500;">{f.get('stops', '—')}</span>
           </td>
+          <td style="padding:14px 16px;border-bottom:1px solid #F1F5F9;text-align:center;">
+            <a href="{booking_url}" style="display:inline-block;background:#EFF6FF;color:#2563EB;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;">Book →</a>
+          </td>
         </tr>"""
+
+    cheapest_booking = cheapest.get("booking_link", search_url) if cheapest else search_url
 
     return f"""<!DOCTYPE html>
 <html>
@@ -496,17 +792,21 @@ def _html_flight_report_email(origin_code, dest_code, depart_date, return_date, 
           <th style="padding:12px 16px;text-align:left;color:#FFFFFF;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Airline</th>
           <th style="padding:12px 16px;text-align:left;color:#FFFFFF;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Schedule</th>
           <th style="padding:12px 16px;text-align:left;color:#FFFFFF;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Stops</th>
+          <th style="padding:12px 16px;text-align:center;color:#FFFFFF;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Book</th>
         </tr>
         {flight_rows}
       </table>
       {f'<p style="color:#94A3B8;font-size:12px;margin-top:8px;text-align:center;">Showing top 12 of {len(flights)} results</p>' if len(flights) > 12 else ''}
     </div>
     <div style="margin:24px;text-align:center;">
-      <a href="{search_url}" style="display:inline-block;background:#2563EB;color:#FFFFFF;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:14px;">View on Google Flights →</a>
+      <a href="{cheapest_booking}" style="display:inline-block;background:#059669;color:#FFFFFF;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:700;font-size:15px;letter-spacing:0.3px;">🛫 Book Cheapest ({cheapest.get('price', '—')} {cheapest.get('airline', '')}) →</a>
+      <div style="margin-top:10px;">
+        <a href="{search_url}" style="color:#2563EB;text-decoration:none;font-size:13px;font-weight:500;">View all on Google Flights →</a>
+      </div>
     </div>
     <div style="background:#F8FAFC;padding:20px 24px;text-align:center;border-top:1px solid #E2E8F0;">
       <p style="color:#94A3B8;font-size:12px;margin:0;">Powered by TARS · {datetime.now().strftime('%B %d, %Y at %I:%M %p')}</p>
-      <p style="color:#CBD5E1;font-size:11px;margin:4px 0 0;">Prices may change. Google Flights is the source of truth.</p>
+      <p style="color:#CBD5E1;font-size:11px;margin:4px 0 0;">Prices may change. Links go directly to airline booking pages.</p>
     </div>
   </div>
 </body>
@@ -742,8 +1042,17 @@ def search_flights(
         flights = _extract_flight_data(combined_text)
         if max_price > 0:
             flights = [f for f in flights if _price_num(f.get("price", "$99999")) <= max_price]
+
+        # Assign per-flight airline booking links (direct to airline website)
+        ret_for_link = _parse_date(return_date) if return_date else ""
         for f in flights:
-            f["booking_link"] = url
+            airline = f.get("airline", "—")
+            airline_url = _get_airline_booking_url(airline, origin, destination, depart_date, return_date)
+            if airline_url:
+                f["booking_link"] = airline_url
+            else:
+                f["booking_link"] = url  # Fallback to Google Flights
+
         report = _format_flights(flights, query_desc)
         return {"success": True, "content": report, "flights": flights, "url": url, "source": "Google Flights"}
     except Exception as e:
@@ -930,7 +1239,11 @@ def _generate_dates_excel(origin_code, dest_code, date_results, start, end):
 # ═══════════════════════════════════════════════════════
 
 def _send_html_email(to_address, subject, html_body, attachment_path="", from_address="tarsitgroup@outlook.com"):
-    """Send an HTML email via Mail.app with optional attachment."""
+    """Send an HTML email via Mail.app with optional attachment.
+
+    Uses 'html content' property (not 'content') so Mail.app renders HTML
+    instead of showing raw code as plain text.
+    """
     import subprocess
     import tempfile
 
@@ -944,8 +1257,9 @@ def _send_html_email(to_address, subject, html_body, attachment_path="", from_ad
         script = f'''
         set htmlContent to read POSIX file "{html_file.name}" as «class utf8»
         tell application "Mail"
-            set msg to make new outgoing message with properties {{subject:"{safe_subject}", content:htmlContent, visible:false}}
+            set msg to make new outgoing message with properties {{subject:"{safe_subject}", visible:false}}
             tell msg
+                set html content to htmlContent
                 make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
                 set theAttachment to POSIX file "{attachment_path}"
                 make new attachment with properties {{file name:theAttachment}} at after last paragraph
@@ -957,8 +1271,9 @@ def _send_html_email(to_address, subject, html_body, attachment_path="", from_ad
         script = f'''
         set htmlContent to read POSIX file "{html_file.name}" as «class utf8»
         tell application "Mail"
-            set msg to make new outgoing message with properties {{subject:"{safe_subject}", content:htmlContent, visible:false}}
+            set msg to make new outgoing message with properties {{subject:"{safe_subject}", visible:false}}
             tell msg
+                set html content to htmlContent
                 make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
             end tell
             send msg
@@ -1048,6 +1363,8 @@ def search_flights_report(
         nonstop_line = ""
         if nonstops:
             nonstop_line = f"\n✈️ Best nonstop: {best_ns.get('price', '?')} — {best_ns.get('airline', '?')} ({best_ns.get('duration', '?')})"
+        # Use airline-specific link for cheapest flight
+        cheapest_link = cheapest.get("booking_link", search_url)
         imsg = (
             f"✅ Flight report ready!\n\n"
             f"🛫 {origin_code} → {dest_code}\n"
@@ -1055,7 +1372,7 @@ def search_flights_report(
             f"📊 Found {len(flights)} options\n"
             f"💰 Cheapest: {cheapest.get('price', '?')} — {cheapest.get('airline', '?')} ({cheapest.get('stops', '?')})"
             f"{nonstop_line}\n\n"
-            f"🔗 View flights: {search_url}"
+            f"🔗 Book cheapest: {cheapest_link}"
         )
         if emailed:
             imsg += f"\n📧 Report emailed to {email_to}"
@@ -1134,10 +1451,14 @@ def find_cheapest_dates(
                 cabin=cabin, stops=stops,
             )
             flights = r.get("flights", [])
-            booking_link = _build_booking_link(origin, destination, date_str, trip_type=trip_type)
+            gf_link = _build_booking_link(origin, destination, date_str, trip_type=trip_type)
             if flights:
                 best = flights[0]
                 price = _price_num(best.get("price", "$99999"))
+                # Use airline-specific booking link, fall back to Google Flights
+                airline_link = _get_airline_booking_url(
+                    best.get("airline", ""), origin, destination, date_str)
+                booking_link = airline_link or best.get("booking_link", gf_link)
                 date_results.append({
                     "date": date_str, "day": dt.strftime("%A"),
                     "price": best.get("price", "—"), "price_num": price,
@@ -1150,7 +1471,7 @@ def find_cheapest_dates(
                 date_results.append({
                     "date": date_str, "day": dt.strftime("%A"),
                     "price": "N/A", "price_num": 99999, "airline": "—", "stops": "—",
-                    "duration": "—", "depart_time": "—", "options": 0, "booking_link": booking_link,
+                    "duration": "—", "depart_time": "—", "options": 0, "booking_link": gf_link,
                 })
                 print("no results")
         except Exception as e:
@@ -1317,7 +1638,8 @@ def track_flight_price(
 
     already_hit = current_price and current_price <= target_price
     if already_hit:
-        booking_link = _build_booking_link(origin, destination, depart_date, return_date, trip_type)
+        airline_link = _get_airline_booking_url(current_airline, origin, destination, depart_date, return_date)
+        booking_link = airline_link or _build_booking_link(origin, destination, depart_date, return_date, trip_type)
         _send_price_alert(tracker, current_price, current_airline, booking_link)
         content = (
             f"🎯 Tracker set: {origin_code}→{dest_code} on {depart}\n"
@@ -1479,7 +1801,11 @@ def check_price_trackers() -> dict:
             tracker["price_history"] = tracker["price_history"][-50:]
 
             if price <= tracker["target_price"]:
-                booking_link = _build_booking_link(
+                # Use airline-specific booking link for alerts
+                airline_link = _get_airline_booking_url(
+                    airline, tracker["origin"], tracker["destination"],
+                    tracker["depart_date"], tracker.get("return_date", ""))
+                booking_link = airline_link or _build_booking_link(
                     tracker["origin"], tracker["destination"],
                     tracker["depart_date"], tracker.get("return_date", ""),
                     tracker.get("trip_type", "round_trip"),
