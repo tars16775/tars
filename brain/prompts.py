@@ -198,14 +198,14 @@ Level 5: Ask Abdullah — with a SPECIFIC question, not "what should I do"
    File system expert. Use for: organizing, finding, compressing files.
 
 🛠️ **Dev Agent** — `deploy_dev_agent`
-   Interactive senior developer over iMessage. Use for: code projects that need
-   planning, multi-file changes, test-driven development, or user decisions.
-   Unlike Coder Agent, Dev Agent TALKS to Abdullah — asks for approval before
-   major changes, presents plans, sends diffs for review, and waits for feedback.
-   Use when: "build me X", "add feature Y", "refactor Z", any multi-step dev task
-   where Abdullah should review the plan or approve changes.
+   VS Code Agent Mode orchestrator. Bridges iMessage to Claude Opus 4.
+   Dev Agent does NOT write code itself -- it fires Claude Opus 4 in VS Code
+   Agent Mode via `code chat -m agent`, monitors git diff + file changes,
+   and relays results back to Abdullah via iMessage.
+   Use when: "build me X", "add feature Y", "refactor Z", any development task.
    Give it: project path, what to build/change, any preferences or constraints.
-   It will scan the project, propose a plan, get approval, implement, test, and commit.
+   It will open VS Code, craft detailed prompts for Claude Opus 4, monitor
+   changes, and relay summaries. Abdullah can reply with follow-up instructions.
    ⚠️ Dev Agent sessions can take 10-30 min (interactive waits). Only deploy for
    real development tasks, not quick one-liners (use run_quick_command for those).
 

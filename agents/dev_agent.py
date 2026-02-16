@@ -1,67 +1,97 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║      TARS — Dev Agent: Your Remote Senior Developer          ║
-╠══════════════════════════════════════════════════════════════╣
-║  A full interactive development agent you control from       ║
-║  iMessage. Reads projects, plans changes, writes code,       ║
-║  runs tests, asks for approval, and iterates — all while     ║
-║  you're away from the keyboard.                              ║
-║                                                              ║
-║  Unlike the Coder Agent (single-shot executor), the Dev      ║
-║  Agent maintains an interactive session:                     ║
-║    - Understands the full project before touching code       ║
-║    - Sends you diffs and plans for approval via iMessage     ║
-║    - Waits for your feedback before destructive changes      ║
-║    - Runs test → fix → retest loops autonomously             ║
-║    - Commits at milestones, pushes when you approve          ║
-║                                                              ║
-║  Think: GitHub Copilot Agent Mode, but over iMessage.        ║
-╚══════════════════════════════════════════════════════════════╝
+TARS Dev Agent: VS Code Agent Mode Orchestrator
+
+TARS doesn't pretend to be the developer. Claude Opus 4 in VS Code
+Agent Mode IS the developer. TARS is the orchestrator -- the bridge
+between your iMessage and VS Code's most powerful coding AI.
+
+Flow:
+  1. You text TARS: "fix the login bug"
+  2. TARS opens the right project in VS Code
+  3. TARS fires: code chat -m agent "fix the login bug"
+  4. Claude Opus 4 does ALL the coding
+  5. TARS monitors git diff + file changes
+  6. TARS sends you a summary via iMessage
+  7. You reply "now add dark mode" -> cycle repeats
 """
 
 import os
 import json
 import subprocess
-import difflib
 import time as _time
+import glob
 from datetime import datetime
 
 from agents.base_agent import BaseAgent
 from agents.agent_tools import (
-    TOOL_RUN_COMMAND, TOOL_READ_FILE, TOOL_WRITE_FILE, TOOL_EDIT_FILE,
-    TOOL_LIST_DIR, TOOL_SEARCH_FILES, TOOL_GIT, TOOL_INSTALL_PACKAGE,
-    TOOL_RUN_TESTS, TOOL_DONE, TOOL_STUCK,
+    TOOL_RUN_COMMAND, TOOL_READ_FILE,
+    TOOL_LIST_DIR, TOOL_SEARCH_FILES, TOOL_GIT,
+    TOOL_DONE, TOOL_STUCK,
 )
 from hands.terminal import run_terminal
-from hands.file_manager import read_file, write_file, list_directory
+from hands.file_manager import read_file, list_directory
 
 
-# ─────────────────────────────────────────────
-#  Dev-Agent-only Tool Definitions
-# ─────────────────────────────────────────────
+# -------------------------------------------
+#  VS Code CLI -- auto-discover
+# -------------------------------------------
+
+def _find_vscode_cli():
+    """Find the VS Code CLI binary, even under AppTranslocation."""
+    # 1. Check PATH
+    result = subprocess.run(["which", "code"], capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+
+    # 2. Standard install location
+    standard = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    if os.path.exists(standard):
+        return standard
+
+    # 3. AppTranslocation (macOS moves apps here on first launch)
+    try:
+        result = subprocess.run(
+            ["find", "/private/var/folders", "-name", "code",
+             "-path", "*/Visual Studio Code.app/*/bin/*"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in result.stdout.strip().splitlines():
+            if line.endswith("/bin/code") and os.path.isfile(line):
+                return line
+    except Exception:
+        pass
+
+    # 4. Homebrew
+    brew_path = "/usr/local/bin/code"
+    if os.path.exists(brew_path):
+        return brew_path
+
+    return None
+
+
+VSCODE_CLI = _find_vscode_cli()
+
+
+# -------------------------------------------
+#  Tool Definitions
+# -------------------------------------------
 
 TOOL_ASK_USER = {
     "name": "ask_user",
     "description": (
-        "Send a question/proposal to the user via iMessage and WAIT for their reply. "
-        "Use this when you need a decision, approval, or clarification. "
-        "The user may be away from the computer — they'll reply on their phone. "
-        "Be concise and specific. Include numbered options when possible. "
-        "Returns the user's reply text."
+        "Send a question to the user via iMessage and WAIT for their reply. "
+        "Use for decisions, approval, or clarification. Be concise."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "message": {
                 "type": "string",
-                "description": (
-                    "The message to send. Be concise — this goes to iMessage. "
-                    "Include context, options, and what you need from them."
-                ),
+                "description": "The message to send. Be concise, use numbered options.",
             },
             "timeout": {
                 "type": "integer",
-                "description": "How long to wait for reply in seconds (default 300 = 5 min)",
+                "description": "Seconds to wait for reply (default 300)",
                 "default": 300,
             },
         },
@@ -72,294 +102,235 @@ TOOL_ASK_USER = {
 TOOL_NOTIFY_USER = {
     "name": "notify_user",
     "description": (
-        "Send a one-way status update to the user via iMessage. "
-        "Does NOT wait for a reply. Use for progress updates, "
-        "completion notifications, or informational messages. "
-        "For questions or approvals, use ask_user instead."
+        "Send a one-way status update via iMessage. No wait for reply. "
+        "Use for progress updates and completion notifications."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "message": {
                 "type": "string",
-                "description": "Status message to send (keep it brief)",
+                "description": "Status message to send (keep brief)",
             },
         },
         "required": ["message"],
     },
 }
 
+TOOL_VSCODE_AGENT = {
+    "name": "vscode_agent",
+    "description": (
+        "Fire Claude Opus 4 in VS Code Agent Mode to do the actual coding work. "
+        "This is your PRIMARY tool. Claude Opus 4 handles all code reading, editing, "
+        "terminal commands, testing, and debugging. You orchestrate, it executes.\n\n"
+        "The prompt should be detailed and specific. Include:\n"
+        "- What to do (the task)\n"
+        "- Which project/directory to work in\n"
+        "- Any constraints or preferences from the user\n"
+        "- Context about what was already done (if continuing)\n\n"
+        "This opens a new Agent Mode chat session in VS Code. The command returns "
+        "immediately. Use monitor_changes to check what Agent Mode did."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "The prompt to send to Claude Opus 4 Agent Mode. Be detailed. "
+                    "Include file paths, expected behavior, user constraints."
+                ),
+            },
+            "project_path": {
+                "type": "string",
+                "description": "Absolute path to the project root to open in VS Code.",
+            },
+            "add_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional file paths to add as context.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["agent", "edit", "ask"],
+                "description": "Chat mode: agent (default), edit, or ask.",
+                "default": "agent",
+            },
+        },
+        "required": ["prompt"],
+    },
+}
+
+TOOL_MONITOR_CHANGES = {
+    "name": "monitor_changes",
+    "description": (
+        "Monitor what VS Code Agent Mode changed. Checks git diff, modified files, "
+        "new files, and recent commits. Use after firing vscode_agent to see what "
+        "Claude Opus 4 did, then relay a summary to the user.\n\n"
+        "Set wait_seconds to give Agent Mode time to work. "
+        "Simple tasks: 30-60s. Complex tasks: 120-300s."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "project_path": {
+                "type": "string",
+                "description": "Absolute path to the project to monitor.",
+            },
+            "wait_seconds": {
+                "type": "integer",
+                "description": "Seconds to wait before checking (default 60).",
+                "default": 60,
+            },
+        },
+        "required": ["project_path"],
+    },
+}
+
 TOOL_PROJECT_SCAN = {
     "name": "project_scan",
     "description": (
-        "Deeply scan a project directory to understand its structure, tech stack, "
-        "dependencies, entry points, test setup, and conventions. "
-        "Returns a comprehensive project profile. ALWAYS run this first before "
-        "making any code changes to a project you haven't seen before."
+        "Quick scan of a project: structure, tech stack, git state. "
+        "Use to get context before crafting a good prompt for vscode_agent."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Absolute path to the project root directory",
-            },
-            "depth": {
-                "type": "integer",
-                "description": "Max depth for directory tree (default 4)",
-                "default": 4,
+                "description": "Absolute path to the project root",
             },
         },
         "required": ["path"],
     },
 }
 
-TOOL_MULTI_EDIT = {
-    "name": "multi_edit",
+TOOL_OPEN_PROJECT = {
+    "name": "open_project",
     "description": (
-        "Apply multiple surgical edits to one or more files in a single operation. "
-        "Each edit is an exact string replacement (like edit_file). "
-        "All edits are validated before any are applied — if any old_string is not "
-        "found, NONE of the edits are applied. This ensures atomic multi-file changes. "
-        "ALWAYS read files first to get exact strings."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "edits": {
-                "type": "array",
-                "description": "List of edits to apply atomically",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Absolute file path"},
-                        "old_string": {"type": "string", "description": "Exact text to find"},
-                        "new_string": {"type": "string", "description": "Replacement text"},
-                    },
-                    "required": ["path", "old_string", "new_string"],
-                },
-            },
-        },
-        "required": ["edits"],
-    },
-}
-
-TOOL_DIFF_PREVIEW = {
-    "name": "diff_preview",
-    "description": (
-        "Generate a unified diff preview showing what changes would be made. "
-        "Does NOT apply the changes — just shows what would happen. "
-        "Use this before ask_user to let the user review proposed changes."
+        "Open a project folder in VS Code. Use before vscode_agent if "
+        "the project is not already open."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Absolute path to the file to diff",
+                "description": "Absolute path to the project folder or file.",
             },
-            "old_string": {
-                "type": "string",
-                "description": "Exact text that would be replaced",
-            },
-            "new_string": {
-                "type": "string",
-                "description": "The replacement text",
+            "new_window": {
+                "type": "boolean",
+                "description": "Open in new window (default false).",
+                "default": False,
             },
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["path"],
     },
 }
 
-TOOL_TEST_LOOP = {
-    "name": "test_loop",
+TOOL_CONTINUE_SESSION = {
+    "name": "continue_session",
     "description": (
-        "Run a test command repeatedly, reading failures and fixing them "
-        "automatically. Loops up to max_attempts times: run test → if fail, "
-        "read the error, diagnose, fix the code, re-test. Stops when all "
-        "tests pass or max_attempts is reached. Returns the final test output "
-        "and a summary of all fixes applied."
+        "Send a follow-up prompt to VS Code Agent Mode to continue or adjust work. "
+        "Use after getting user feedback to keep the development session going."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "test_command": {
+            "prompt": {
                 "type": "string",
-                "description": "The test command to run (e.g., 'pytest', 'npm test')",
-            },
-            "max_attempts": {
-                "type": "integer",
-                "description": "Max fix-and-retry cycles (default 5)",
-                "default": 5,
+                "description": "Follow-up prompt incorporating user feedback.",
             },
             "project_path": {
                 "type": "string",
-                "description": "Project root path (for context when fixing)",
+                "description": "Project root path.",
+            },
+            "add_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Additional files to add as context.",
             },
         },
-        "required": ["test_command"],
+        "required": ["prompt"],
     },
 }
 
-TOOL_FIND_REFERENCES = {
-    "name": "find_references",
+TOOL_CHECK_STATUS = {
+    "name": "check_status",
     "description": (
-        "Find all references to a symbol (function, class, variable, import) "
-        "across the project. Returns file paths and line numbers where the "
-        "symbol appears. Essential before renaming or changing function signatures."
+        "Check if VS Code Agent Mode is still actively working. "
+        "Looks at CPU usage and recent file modification times."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "symbol": {
+            "project_path": {
                 "type": "string",
-                "description": "The symbol name to search for",
-            },
-            "directory": {
-                "type": "string",
-                "description": "Project root to search in",
-            },
-            "file_types": {
-                "type": "string",
-                "description": "Comma-separated extensions to search (default: py,js,ts,jsx,tsx)",
-                "default": "py,js,ts,jsx,tsx",
+                "description": "Project root to check for activity.",
             },
         },
-        "required": ["symbol", "directory"],
-    },
-}
-
-TOOL_ROLLBACK = {
-    "name": "rollback",
-    "description": (
-        "Undo recent changes using git. Actions: "
-        "'last_commit' — undo last commit (keeps changes staged), "
-        "'file' — restore a specific file to its last committed state, "
-        "'all' — discard ALL uncommitted changes (DESTRUCTIVE). "
-        "Always ask_user before using 'all'."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["last_commit", "file", "all"],
-                "description": "What to roll back",
-            },
-            "file_path": {
-                "type": "string",
-                "description": "File path (required for action='file')",
-            },
-        },
-        "required": ["action"],
+        "required": ["project_path"],
     },
 }
 
 
-# ─────────────────────────────────────────────
+# -------------------------------------------
 #  System Prompt
-# ─────────────────────────────────────────────
+# -------------------------------------------
 
-DEV_SYSTEM_PROMPT = """You are TARS Dev Agent — an elite senior software developer who works interactively with the user via iMessage. You're like having GitHub Copilot Agent Mode, but the user controls you from their phone while they're away from the keyboard.
+DEV_SYSTEM_PROMPT = """You are TARS Dev Agent -- an orchestrator that bridges iMessage and VS Code Agent Mode (Claude Opus 4).
 
-## What Makes You Different
-You are NOT a one-shot code executor. You are an INTERACTIVE developer:
-- You UNDERSTAND the project before writing code
-- You PLAN changes and get approval before implementing
-- You TEST your work and fix failures automatically
-- You ASK when you need decisions — don't guess
-- You COMMUNICATE progress naturally via iMessage
-- You COMMIT at milestones and push when approved
+You do NOT write code yourself. You control the most powerful coding AI and relay results to the user on their phone.
 
-## Your Development Process
+## Your Role
+You are a PROJECT MANAGER and REMOTE CONTROL, not a developer:
+- Receive tasks from the user via iMessage
+- Open the right project in VS Code
+- Craft precise prompts and fire Claude Opus 4 Agent Mode
+- Monitor what Agent Mode changed (git diff, file changes)
+- Summarize results and send back via iMessage
+- Take follow-up instructions and continue the session
 
-### Phase 1: Understand
-ALWAYS start by scanning the project with `project_scan` if you haven't already.
-Read the key files. Understand the architecture, patterns, and conventions.
-Don't write a single line until you understand the codebase.
+## Workflow
 
-### Phase 2: Plan
-Break the task into a clear plan. Use `ask_user` to present the plan:
-- What files will be created/modified
-- What the approach will be  
-- Any decisions that need user input
-- Estimated scope (small/medium/large change)
+### Step 1: Understand
+- If unfamiliar project, use project_scan first
+- If vague task, use ask_user to get specifics
 
-Keep the plan message SHORT — the user is reading on their phone.
-Use numbered options when there are choices.
+### Step 2: Launch
+- Use open_project if needed
+- Craft a DETAILED prompt (quality determines everything)
+- Fire vscode_agent
 
-### Phase 3: Implement
-After approval, implement the changes:
-1. Read the target files first (ALWAYS)
-2. Make surgical edits with `edit_file` or `multi_edit`  
-3. For new files, use `write_file`
-4. After each significant change, run the build/test to verify
-5. For multi-file changes, use `multi_edit` for atomicity
+### Step 3: Monitor and Report
+- Use monitor_changes (give it time!)
+- Send concise summary via notify_user
 
-### Phase 4: Test & Fix
-Run the project's test suite with `test_loop` for automatic fix cycles.
-If tests fail:
-1. Read the error output carefully
-2. Identify the root cause (not just the symptom)
-3. Fix it
-4. Re-test
-Loop until green or ask the user if stuck.
+### Step 4: Iterate
+- ask_user to check if user wants more
+- continue_session with follow-up prompts
 
-### Phase 5: Report & Commit
-Send a summary via `notify_user`:
-- What was changed (files + brief description)
-- Test results
-- Any follow-up suggestions
-Use `ask_user` to confirm before committing and pushing.
+### Step 5: Finalize
+- Check git status, commit/push if needed
+- Send final summary
 
-## Communication Style
-- Be concise — user is on their phone
-- Lead with the important info
-- Use emojis sparingly but effectively (✅ ❌ 🔧 📝 ⚠️)
-- Numbered lists for multiple items
-- Code snippets only if short and critical
-- Never dump entire files into iMessage
+## Prompt Crafting Tips
+- Be specific: "Fix handleLogin in src/auth.ts" > "fix login"
+- Include context: related files, tech stack, user preferences
+- Set constraints: "Don't change the API" or "Keep backward compat"
+- Mention testing: "Run pytest after" or "Make sure npm test passes"
 
 ## Rules
-1. ALWAYS `project_scan` before touching an unfamiliar project
-2. ALWAYS `read_file` before `edit_file` — never guess at contents
-3. ALWAYS present a plan via `ask_user` before making significant changes
-4. Use `diff_preview` + `ask_user` before large/risky edits
-5. Run tests after changes — use `test_loop` for auto-fix cycles
-6. `git commit` at milestones, `ask_user` before `git push`
-7. Use `rollback` if something goes wrong — don't leave code broken
-8. If an edit fails (old_string not found), re-read the file and try again
-9. Handle errors gracefully — catch exceptions, validate inputs
-10. Follow the project's existing conventions (naming, style, patterns)
-11. NEVER use `rollback` with action='all' without asking user first
-12. For destructive operations (delete files, force push, drop tables), ALWAYS `ask_user`
-
-## Handling User Responses
-When the user replies to `ask_user`:
-- "yes", "y", "go", "do it", "👍", "approved" → proceed with the plan
-- "no", "n", "don't", "stop", "cancel" → abort and ask what they want instead
-- Specific feedback → adjust the plan and re-present if significant changes
-- "skip" → skip current step, move to next
-- Questions → answer them, then re-ask for approval
-
-## Current Environment
-- macOS with Python 3.9+, Node.js, git
-- Shell: zsh
-- You can run any CLI tool, build system, or package manager
+1. NEVER write code yourself -- use vscode_agent or continue_session
+2. ALWAYS monitor_changes after launching -- don't assume success
+3. ALWAYS notify_user of results
+4. Give Agent Mode enough wait_seconds
+5. Use ask_user before destructive operations
 """
 
 
 class DevAgent(BaseAgent):
-    """
-    Interactive development agent — like VS Code Agent Mode over iMessage.
-    
-    The key difference from CoderAgent: this agent has `ask_user` and
-    `notify_user` tools that communicate with the user via iMessage,
-    creating an interactive development session.
-    
-    The user can approve plans, reject changes, provide feedback,
-    and direct the development flow — all from their phone.
-    """
+    """VS Code Agent Mode orchestrator -- bridges iMessage to Claude Opus 4."""
 
     def __init__(self, llm_client, model, max_steps=40, phone=None,
                  update_every=5, kill_event=None,
@@ -374,9 +345,13 @@ class DevAgent(BaseAgent):
         )
         self._imessage_sender = imessage_sender
         self._imessage_reader = imessage_reader
-        self._project_cache = {}  # path → scan results
-        self._changes_made = []   # track all changes for summary
         self._session_start = datetime.now()
+        self._project_cache = {}
+        self._snapshots = {}
+        self._vscode_cli = VSCODE_CLI
+        self._agent_launches = 0
+
+    # ---- Identity ----
 
     @property
     def agent_name(self):
@@ -384,100 +359,94 @@ class DevAgent(BaseAgent):
 
     @property
     def agent_emoji(self):
-        return "🛠️"
+        return "\U0001f6e0\ufe0f"
 
     @property
     def system_prompt(self):
-        return DEV_SYSTEM_PROMPT
+        cli_status = (
+            f"VS Code CLI: {self._vscode_cli}"
+            if self._vscode_cli
+            else "WARNING: VS Code CLI not found! Install via: VS Code > Cmd+Shift+P > Shell Command: Install 'code' in PATH"
+        )
+        return DEV_SYSTEM_PROMPT + f"\n\n## Environment\n- {cli_status}\n- macOS, Python 3.9+, zsh\n"
 
     @property
     def tools(self):
         return [
-            # Dev-specific interactive tools
+            TOOL_VSCODE_AGENT,
+            TOOL_CONTINUE_SESSION,
+            TOOL_MONITOR_CHANGES,
+            TOOL_CHECK_STATUS,
+            TOOL_OPEN_PROJECT,
+            TOOL_PROJECT_SCAN,
             TOOL_ASK_USER,
             TOOL_NOTIFY_USER,
-            TOOL_PROJECT_SCAN,
-            TOOL_MULTI_EDIT,
-            TOOL_DIFF_PREVIEW,
-            TOOL_TEST_LOOP,
-            TOOL_FIND_REFERENCES,
-            TOOL_ROLLBACK,
-            # Standard coding tools
             TOOL_RUN_COMMAND,
             TOOL_READ_FILE,
-            TOOL_WRITE_FILE,
-            TOOL_EDIT_FILE,
             TOOL_LIST_DIR,
             TOOL_SEARCH_FILES,
             TOOL_GIT,
-            TOOL_INSTALL_PACKAGE,
-            TOOL_RUN_TESTS,
-            # Terminal
             TOOL_DONE,
             TOOL_STUCK,
         ]
 
-    # ═══════════════════════════════════════════════════════
-    #  Tool Dispatch
-    # ═══════════════════════════════════════════════════════
+    # ===== Tool Dispatch =====
 
     def _dispatch(self, name, inp):
-        """Route dev tool calls to handlers."""
         try:
-            # ── Dev-specific tools ──
-            if name == "ask_user":
-                return self._ask_user(inp["message"], inp.get("timeout", 300))
+            if name == "vscode_agent":
+                return self._vscode_agent(
+                    inp["prompt"],
+                    inp.get("project_path"),
+                    inp.get("add_files"),
+                    inp.get("mode", "agent"),
+                )
+
+            elif name == "continue_session":
+                return self._vscode_agent(
+                    inp["prompt"],
+                    inp.get("project_path"),
+                    inp.get("add_files"),
+                    "agent",
+                )
+
+            elif name == "monitor_changes":
+                return self._monitor_changes(
+                    inp["project_path"],
+                    inp.get("wait_seconds", 60),
+                )
+
+            elif name == "check_status":
+                return self._check_status(inp["project_path"])
+
+            elif name == "open_project":
+                return self._open_project(
+                    inp["path"],
+                    inp.get("new_window", False),
+                )
+
+            elif name == "project_scan":
+                return self._project_scan(inp["path"])
+
+            elif name == "ask_user":
+                return self._ask_user(
+                    inp["message"],
+                    inp.get("timeout", 300),
+                )
 
             elif name == "notify_user":
                 return self._notify_user(inp["message"])
 
-            elif name == "project_scan":
-                return self._project_scan(inp["path"], inp.get("depth", 4))
-
-            elif name == "multi_edit":
-                return self._multi_edit(inp["edits"])
-
-            elif name == "diff_preview":
-                return self._diff_preview(
-                    inp["path"], inp["old_string"], inp["new_string"]
-                )
-
-            elif name == "test_loop":
-                return self._test_loop(
-                    inp["test_command"],
-                    inp.get("max_attempts", 5),
-                    inp.get("project_path"),
-                )
-
-            elif name == "find_references":
-                return self._find_references(
-                    inp["symbol"],
-                    inp["directory"],
-                    inp.get("file_types", "py,js,ts,jsx,tsx"),
-                )
-
-            elif name == "rollback":
-                return self._rollback(inp["action"], inp.get("file_path"))
-
-            # ── Standard coding tools (same as coder agent) ──
             elif name == "run_command":
-                result = run_terminal(inp["command"], timeout=inp.get("timeout", 60))
+                result = run_terminal(
+                    inp["command"],
+                    timeout=inp.get("timeout", 60),
+                )
                 return result.get("content", str(result))
 
             elif name == "read_file":
                 result = read_file(inp["path"])
                 return result.get("content", str(result))
-
-            elif name == "write_file":
-                result = write_file(inp["path"], inp["content"])
-                self._changes_made.append(f"Created: {inp['path']}")
-                return result.get("content", str(result))
-
-            elif name == "edit_file":
-                result = self._edit_file(inp["path"], inp["old_string"], inp["new_string"])
-                if "✅" in result:
-                    self._changes_made.append(f"Edited: {inp['path']}")
-                return result
 
             elif name == "list_dir":
                 result = list_directory(inp["path"])
@@ -491,536 +460,448 @@ class DevAgent(BaseAgent):
                 )
 
             elif name == "git":
-                result = run_terminal(f"git {inp['command']}", timeout=30)
-                content = result.get("content", str(result))
-                cmd = inp["command"].strip()
-                if cmd.startswith("commit"):
-                    self._changes_made.append(f"Committed: {cmd}")
-                elif cmd.startswith("push"):
-                    self._changes_made.append(f"Pushed: {cmd}")
-                return content
-
-            elif name == "install_package":
-                mgr = inp.get("manager", "pip")
-                pkg = inp["package"]
-                cmd_map = {
-                    "pip": f"pip install {pkg}",
-                    "pip3": f"pip3 install {pkg}",
-                    "npm": f"npm install {pkg}",
-                    "brew": f"brew install {pkg}",
-                }
-                cmd = cmd_map.get(mgr, f"pip install {pkg}")
-                result = run_terminal(cmd, timeout=120)
+                cmd_str = inp["command"]
+                result = run_terminal(f"git {cmd_str}", timeout=30)
                 return result.get("content", str(result))
 
-            elif name == "run_tests":
-                result = run_terminal(inp["command"], timeout=inp.get("timeout", 120))
-                return result.get("content", str(result))
+            return f"Unknown tool: {name}"
+        except Exception as e:
+            return f"ERROR [{name}]: {e}"
 
-            return f"Unknown dev tool: {name}"
+    # ===== VS Code Agent Mode =====
+
+    def _vscode_agent(self, prompt, project_path=None, add_files=None, mode="agent"):
+        """Launch Claude Opus 4 in VS Code Agent Mode."""
+        if not self._vscode_cli:
+            return (
+                "ERROR: VS Code CLI not found. Cannot launch Agent Mode.\n"
+                "Fix: VS Code > Cmd+Shift+P > Shell Command: Install 'code' in PATH"
+            )
+
+        # Build the command
+        cmd = [self._vscode_cli, "chat", "-m", mode]
+
+        # Add context files
+        if add_files:
+            for f in add_files:
+                if os.path.exists(f):
+                    cmd.extend(["-a", f])
+
+        # Reuse existing window
+        cmd.append("-r")
+
+        # The prompt itself
+        cmd.append(prompt)
+
+        # Open the project first if specified
+        if project_path:
+            self._snapshots[project_path] = self._take_snapshot(project_path)
+            try:
+                subprocess.run(
+                    [self._vscode_cli, project_path, "-r"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                _time.sleep(2)
+            except Exception:
+                pass
+
+        self._agent_launches += 1
+        launch_num = self._agent_launches
+        print(f"    [Dev Agent] Launching Agent Mode #{launch_num}: {prompt[:120]}...")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=project_path if project_path else None,
+            )
+
+            if result.returncode != 0:
+                stderr = result.stderr.strip()
+                return f"ERROR launching Agent Mode (exit {result.returncode}): {stderr}"
+
+            parts = [
+                f"Agent Mode launched (session #{launch_num}).",
+                f"Mode: {mode}",
+                f"Prompt: {prompt[:200]}",
+            ]
+            if project_path:
+                parts.append(f"Project: {project_path}")
+            parts.append("")
+            parts.append("Claude Opus 4 is now working. Use monitor_changes to check what it did.")
+            return "\n".join(parts)
+
+        except subprocess.TimeoutExpired:
+            return (
+                f"Agent Mode launch sent (session #{launch_num}), "
+                "but CLI timed out -- it may still be processing. "
+                "Use monitor_changes to check."
+            )
         except Exception as e:
             return f"ERROR: {e}"
 
-    # ═══════════════════════════════════════════════════════
-    #  Interactive iMessage Tools
-    # ═══════════════════════════════════════════════════════
+    # ===== Snapshot and Monitoring =====
+
+    def _take_snapshot(self, project_path):
+        """Capture file mtimes for change detection."""
+        snapshot = {}
+        skip_dirs = {
+            ".git", "node_modules", "venv", "__pycache__",
+            ".next", "dist", "build", ".tox", ".mypy_cache",
+        }
+        try:
+            for root, dirs, files in os.walk(project_path):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                for f in files:
+                    fpath = os.path.join(root, f)
+                    try:
+                        st = os.stat(fpath)
+                        snapshot[fpath] = {
+                            "mtime": st.st_mtime,
+                            "size": st.st_size,
+                        }
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+        return snapshot
+
+    def _monitor_changes(self, project_path, wait_seconds=60):
+        """Wait, then check git diff + file snapshots for changes."""
+        project_path = os.path.expanduser(project_path)
+        if not os.path.isdir(project_path):
+            return f"ERROR: Not a directory: {project_path}"
+
+        if wait_seconds > 0:
+            print(f"    [Dev Agent] Waiting {wait_seconds}s for Agent Mode to work...")
+            _time.sleep(wait_seconds)
+
+        basename = os.path.basename(project_path)
+        sections = [f"## Changes in {basename}\n"]
+
+        # --- Git diff ---
+        try:
+            r = run_terminal(
+                f"cd '{project_path}' && git diff --stat 2>/dev/null",
+                timeout=10,
+            )
+            diff_stat = r.get("content", "").strip()
+            if diff_stat:
+                sections.append(f"### Git Diff (unstaged)\n```\n{diff_stat}\n```\n")
+
+            r = run_terminal(
+                f"cd '{project_path}' && git diff --cached --stat 2>/dev/null",
+                timeout=10,
+            )
+            cached = r.get("content", "").strip()
+            if cached:
+                sections.append(f"### Git Diff (staged)\n```\n{cached}\n```\n")
+
+            r = run_terminal(
+                f"cd '{project_path}' && git ls-files --others --exclude-standard 2>/dev/null | head -20",
+                timeout=10,
+            )
+            untracked = r.get("content", "").strip()
+            if untracked:
+                sections.append(f"### New Untracked Files\n```\n{untracked}\n```\n")
+
+            r = run_terminal(
+                f"cd '{project_path}' && git diff 2>/dev/null | head -200",
+                timeout=10,
+            )
+            diff_content = r.get("content", "").strip()
+            if diff_content:
+                sections.append(f"### Diff Detail\n```diff\n{diff_content}\n```\n")
+        except Exception as e:
+            sections.append(f"### Git\n(Error checking git: {e})\n")
+
+        # --- File snapshot comparison ---
+        baseline = self._snapshots.get(project_path)
+        if baseline:
+            current = self._take_snapshot(project_path)
+            modified = []
+            new_files = []
+            deleted = []
+
+            for fpath, info in current.items():
+                if fpath in baseline:
+                    if info["mtime"] != baseline[fpath]["mtime"]:
+                        modified.append(os.path.relpath(fpath, project_path))
+                else:
+                    new_files.append(os.path.relpath(fpath, project_path))
+
+            for fpath in baseline:
+                if fpath not in current:
+                    deleted.append(os.path.relpath(fpath, project_path))
+
+            if modified or new_files or deleted:
+                lines = []
+                if modified:
+                    joined = ", ".join(modified[:15])
+                    lines.append(f"Modified ({len(modified)}): {joined}")
+                if new_files:
+                    joined = ", ".join(new_files[:15])
+                    lines.append(f"New ({len(new_files)}): {joined}")
+                if deleted:
+                    joined = ", ".join(deleted[:10])
+                    lines.append(f"Deleted ({len(deleted)}): {joined}")
+                sections.append("### File Changes\n" + "\n".join(lines) + "\n")
+
+            # Update snapshot for next comparison
+            self._snapshots[project_path] = current
+
+        # --- Recent commits ---
+        try:
+            r = run_terminal(
+                f"cd '{project_path}' && git log --oneline -5 --since='30 minutes ago' 2>/dev/null",
+                timeout=5,
+            )
+            recent = r.get("content", "").strip()
+            if recent:
+                sections.append(f"### Recent Commits\n```\n{recent}\n```\n")
+        except Exception:
+            pass
+
+        result_text = "\n".join(sections)
+        if len(sections) <= 1:
+            result_text += "\nNo changes detected yet. Agent Mode may still be working."
+            result_text += "\nTry again with a longer wait_seconds, or use check_status."
+
+        return result_text
+
+    def _check_status(self, project_path):
+        """Check if VS Code Agent Mode is still actively working."""
+        sections = []
+
+        # Check VS Code CPU usage
+        try:
+            r = run_terminal(
+                "ps aux | grep 'Code Helper (Renderer)' | grep -v grep | awk '{print $3}'",
+                timeout=5,
+            )
+            cpu_vals = r.get("content", "").strip()
+            if cpu_vals:
+                cpu_lines = cpu_vals.strip().splitlines()
+                total_cpu = sum(float(v) for v in cpu_lines if v.strip())
+                count = len(cpu_lines)
+                sections.append(f"### VS Code Activity")
+                sections.append(f"- CPU: {total_cpu:.1f}% across {count} renderer(s)")
+                if total_cpu > 15:
+                    sections.append("- Status: Agent Mode appears ACTIVE (high CPU)")
+                elif total_cpu > 3:
+                    sections.append("- Status: Agent Mode may still be working")
+                else:
+                    sections.append("- Status: Agent Mode appears IDLE")
+        except Exception:
+            pass
+
+        # Check recently modified files
+        if project_path:
+            try:
+                r = run_terminal(
+                    f"find '{project_path}' -type f -mmin -2 "
+                    f"-not -path '*/.git/*' -not -path '*/node_modules/*' "
+                    f"-not -path '*/venv/*' -not -path '*/__pycache__/*' "
+                    f"2>/dev/null | head -10",
+                    timeout=5,
+                )
+                recent = r.get("content", "").strip()
+                if recent:
+                    files = [
+                        os.path.relpath(f, project_path)
+                        for f in recent.splitlines()
+                    ]
+                    sections.append("\n### Recently Modified (last 2 min)")
+                    for f in files:
+                        sections.append(f"- {f}")
+                else:
+                    sections.append("\n### Recently Modified")
+                    sections.append("No files changed in last 2 minutes.")
+            except Exception:
+                pass
+
+        if sections:
+            return "\n".join(sections)
+        return "Could not determine VS Code status."
+
+    # ===== VS Code Project =====
+
+    def _open_project(self, path, new_window=False):
+        """Open a project folder in VS Code."""
+        if not self._vscode_cli:
+            return "ERROR: VS Code CLI not found."
+        path = os.path.expanduser(path)
+        flag = "-n" if new_window else "-r"
+        cmd = [self._vscode_cli, path, flag]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                return f"Opened {path} in VS Code."
+            return f"ERROR: {result.stderr.strip()}"
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    # ===== iMessage =====
 
     def _ask_user(self, message, timeout=300):
-        """Send a question via iMessage and wait for the user's reply."""
+        """Send question via iMessage, wait for reply."""
         if not self._imessage_sender or not self._imessage_reader:
-            return "ERROR: iMessage not configured for dev agent. Cannot ask user."
+            return "ERROR: iMessage not configured for this session."
 
-        # Prefix so user knows it's the dev agent
-        tagged = f"🛠️ Dev Agent:\n{message}"
-
+        tagged = f"Dev Agent:\n{message}"
         try:
             self._imessage_sender.send(tagged)
         except Exception as e:
             return f"ERROR sending iMessage: {e}"
 
-        print(f"    📱 [Dev Agent] Asked user: {message[:100]}...")
-        print(f"    ⏳ Waiting for reply ({timeout}s timeout)...")
+        print(f"    [Dev Agent] Asked user: {message[:100]}...")
 
         try:
             reply = self._imessage_reader.wait_for_reply(timeout=timeout)
             if reply.get("success"):
                 user_reply = reply["content"]
-                print(f"    📱 [Dev Agent] User replied: {user_reply[:100]}...")
+                print(f"    [Dev Agent] User replied: {user_reply[:100]}...")
                 return f"User replied: {user_reply}"
-            else:
-                print(f"    ⏰ [Dev Agent] No reply within {timeout}s")
-                return f"No reply received within {timeout}s. Continue with your best judgment or try asking again."
+            return f"No reply received within {timeout}s."
         except Exception as e:
             return f"ERROR waiting for reply: {e}"
 
     def _notify_user(self, message):
-        """Send a one-way status update via iMessage (no wait)."""
+        """Send one-way status update via iMessage."""
         if not self._imessage_sender:
-            return "ERROR: iMessage not configured for dev agent."
+            return "ERROR: iMessage not configured for this session."
 
-        tagged = f"🛠️ Dev Agent:\n{message}"
-
+        tagged = f"Dev Agent:\n{message}"
         try:
             self._imessage_sender.send(tagged)
-            print(f"    📱 [Dev Agent] Notified: {message[:100]}...")
-            return "✅ Notification sent."
+            print(f"    [Dev Agent] Notified user: {message[:100]}...")
+            return "Notification sent."
         except Exception as e:
             return f"ERROR sending notification: {e}"
 
-    # ═══════════════════════════════════════════════════════
-    #  Project Intelligence
-    # ═══════════════════════════════════════════════════════
+    # ===== Project Intelligence =====
 
-    def _project_scan(self, path, depth=4):
-        """Deep scan a project to understand its structure, stack, and conventions."""
+    def _project_scan(self, path):
+        """Quick project scan: structure, tech stack, git state."""
         path = os.path.expanduser(path)
         if not os.path.isdir(path):
             return f"ERROR: Not a directory: {path}"
 
-        # Check cache
+        # Return cached if available
         if path in self._project_cache:
-            return f"(Cached) {self._project_cache[path]}"
+            return self._project_cache[path]
 
-        sections = []
-        sections.append(f"## Project Scan: {path}\n")
+        sections = [f"## Project: {path}\n"]
 
-        # 1. Directory tree
-        try:
-            result = run_terminal(
-                f"find '{path}' -maxdepth {depth} "
-                f"-not -path '*/node_modules/*' "
-                f"-not -path '*/.git/*' "
-                f"-not -path '*/venv/*' "
-                f"-not -path '*/__pycache__/*' "
-                f"-not -path '*/.next/*' "
-                f"-not -path '*/dist/*' "
-                f"-not -path '*/build/*' "
-                f"| head -200",
-                timeout=10,
-            )
-            tree = result.get("content", "")
-            sections.append(f"### Directory Structure\n```\n{tree}\n```\n")
-        except Exception:
-            sections.append("### Directory Structure\n(scan failed)\n")
-
-        # 2. Tech stack detection
+        # Detect tech stack
         stack = []
-        key_files = {
-            "package.json": "Node.js/JavaScript",
+        stack_map = {
+            "package.json": "Node.js",
             "tsconfig.json": "TypeScript",
             "requirements.txt": "Python (pip)",
-            "setup.py": "Python (setuptools)",
-            "pyproject.toml": "Python (modern)",
+            "pyproject.toml": "Python (pyproject)",
+            "setup.py": "Python (setup.py)",
             "Cargo.toml": "Rust",
             "go.mod": "Go",
             "Gemfile": "Ruby",
-            "pom.xml": "Java (Maven)",
-            "build.gradle": "Java/Kotlin (Gradle)",
-            "Makefile": "Make",
-            "Dockerfile": "Docker",
-            "docker-compose.yml": "Docker Compose",
-            "docker-compose.yaml": "Docker Compose",
-            ".env": "Environment Variables",
             "next.config.js": "Next.js",
             "next.config.mjs": "Next.js",
             "next.config.ts": "Next.js",
             "vite.config.ts": "Vite",
             "vite.config.js": "Vite",
+            "Dockerfile": "Docker",
+            "docker-compose.yml": "Docker Compose",
+            "docker-compose.yaml": "Docker Compose",
             "tailwind.config.js": "Tailwind CSS",
             "tailwind.config.ts": "Tailwind CSS",
-            ".eslintrc.js": "ESLint",
-            ".eslintrc.json": "ESLint",
-            "jest.config.js": "Jest",
-            "jest.config.ts": "Jest",
-            "pytest.ini": "Pytest",
-            "setup.cfg": "Python config",
-            "tox.ini": "Tox (Python testing)",
-            ".flake8": "Flake8 (Python linting)",
-            "webpack.config.js": "Webpack",
+            ".swift": "Swift",
+            "Podfile": "CocoaPods",
         }
-
-        for filename, tech in key_files.items():
+        for filename, tech in stack_map.items():
             if os.path.exists(os.path.join(path, filename)):
-                stack.append(tech)
-
+                if tech not in stack:
+                    stack.append(tech)
         if stack:
-            sections.append(f"### Tech Stack\n{', '.join(stack)}\n")
+            sections.append(f"Stack: {', '.join(stack)}\n")
 
-        # 3. Read key config files
-        configs_to_read = [
-            "package.json", "requirements.txt", "pyproject.toml",
-            "tsconfig.json", "Cargo.toml", "go.mod",
-        ]
-        for cfg_name in configs_to_read:
-            cfg_path = os.path.join(path, cfg_name)
-            if os.path.exists(cfg_path):
-                try:
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    # Truncate large configs
-                    if len(content) > 3000:
-                        content = content[:3000] + "\n... (truncated)"
-                    sections.append(f"### {cfg_name}\n```\n{content}\n```\n")
-                except Exception:
-                    pass
-
-        # 4. README
-        for readme_name in ["README.md", "README.txt", "README", "readme.md"]:
-            readme_path = os.path.join(path, readme_name)
-            if os.path.exists(readme_path):
-                try:
-                    with open(readme_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    if len(content) > 2000:
-                        content = content[:2000] + "\n... (truncated)"
-                    sections.append(f"### README\n{content}\n")
-                except Exception:
-                    pass
-                break
-
-        # 5. Git status
+        # Directory tree (3 levels deep)
         try:
-            result = run_terminal(f"cd '{path}' && git status --short 2>/dev/null | head -30", timeout=5)
-            git_status = result.get("content", "").strip()
-            if git_status:
-                sections.append(f"### Git Status\n```\n{git_status}\n```\n")
-
-            result = run_terminal(f"cd '{path}' && git log --oneline -10 2>/dev/null", timeout=5)
-            git_log = result.get("content", "").strip()
-            if git_log:
-                sections.append(f"### Recent Commits\n```\n{git_log}\n```\n")
-
-            result = run_terminal(f"cd '{path}' && git branch -a 2>/dev/null | head -20", timeout=5)
-            branches = result.get("content", "").strip()
-            if branches:
-                sections.append(f"### Branches\n```\n{branches}\n```\n")
-        except Exception:
-            pass
-
-        # 6. Entry points and test files
-        try:
-            result = run_terminal(
+            r = run_terminal(
                 f"find '{path}' -maxdepth 3 "
-                f"\\( -name 'main.py' -o -name 'app.py' -o -name 'index.ts' "
-                f"-o -name 'index.js' -o -name 'server.py' -o -name 'server.ts' "
-                f"-o -name 'main.ts' -o -name 'main.go' -o -name 'main.rs' "
-                f"-o -name 'App.tsx' -o -name 'App.jsx' \\) "
-                f"-not -path '*/node_modules/*' -not -path '*/.git/*' "
-                f"2>/dev/null",
-                timeout=5,
-            )
-            entry_points = result.get("content", "").strip()
-            if entry_points:
-                sections.append(f"### Entry Points\n```\n{entry_points}\n```\n")
-        except Exception:
-            pass
-
-        try:
-            result = run_terminal(
-                f"find '{path}' -maxdepth 4 "
-                f"\\( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.ts' "
-                f"-o -name '*.test.js' -o -name '*.spec.ts' -o -name '*.spec.js' "
-                f"-o -name '*_test.go' \\) "
-                f"-not -path '*/node_modules/*' -not -path '*/.git/*' "
-                f"2>/dev/null | head -20",
-                timeout=5,
-            )
-            test_files = result.get("content", "").strip()
-            if test_files:
-                sections.append(f"### Test Files\n```\n{test_files}\n```\n")
-        except Exception:
-            pass
-
-        # 7. File stats
-        try:
-            result = run_terminal(
-                f"find '{path}' -type f "
                 f"-not -path '*/node_modules/*' -not -path '*/.git/*' "
                 f"-not -path '*/venv/*' -not -path '*/__pycache__/*' "
-                f"2>/dev/null | wc -l",
-                timeout=5,
-            )
-            file_count = result.get("content", "").strip()
-
-            result = run_terminal(
-                f"find '{path}' -type f -name '*.py' -o -name '*.js' -o -name '*.ts' "
-                f"-o -name '*.tsx' -o -name '*.jsx' -o -name '*.go' -o -name '*.rs' "
-                f"2>/dev/null | "
-                f"grep -v node_modules | grep -v .git | grep -v venv | "
-                f"xargs wc -l 2>/dev/null | tail -1",
+                f"| head -80",
                 timeout=10,
             )
-            loc = result.get("content", "").strip()
-            sections.append(f"### Stats\n- Files: {file_count}\n- Lines of code: {loc}\n")
+            tree = r.get("content", "")
+            if tree:
+                sections.append(f"### Structure\n```\n{tree}\n```\n")
         except Exception:
             pass
 
-        scan_result = "\n".join(sections)
-        self._project_cache[path] = scan_result
-        return scan_result
-
-    # ═══════════════════════════════════════════════════════
-    #  Advanced Editing
-    # ═══════════════════════════════════════════════════════
-
-    def _multi_edit(self, edits):
-        """Apply multiple edits atomically — validate all before applying any."""
-        if not edits:
-            return "ERROR: No edits provided."
-
-        # Phase 1: Validate all edits
-        file_contents = {}
-        for i, edit in enumerate(edits):
-            path = os.path.expanduser(edit["path"])
-            old_str = edit["old_string"]
-
-            if path not in file_contents:
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        file_contents[path] = f.read()
-                except FileNotFoundError:
-                    return f"ERROR: File not found: {path} (edit #{i + 1}). No edits applied."
-                except Exception as e:
-                    return f"ERROR: Cannot read {path}: {e}. No edits applied."
-
-            if old_str not in file_contents[path]:
-                return (
-                    f"ERROR: old_string not found in {path} (edit #{i + 1}). "
-                    f"No edits applied. Use read_file to check current contents.\n"
-                    f"Looking for: {old_str[:200]}"
-                )
-
-            count = file_contents[path].count(old_str)
-            if count > 1:
-                return (
-                    f"ERROR: old_string found {count} times in {path} (edit #{i + 1}). "
-                    f"Make it more specific. No edits applied."
-                )
-
-        # Phase 2: Apply all edits
-        applied = []
-        for edit in edits:
-            path = os.path.expanduser(edit["path"])
-            old_str = edit["old_string"]
-            new_str = edit["new_string"]
-
-            content = file_contents[path]
-            file_contents[path] = content.replace(old_str, new_str, 1)
-
-        # Phase 3: Write all files
-        for path, content in file_contents.items():
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                applied.append(path)
-            except Exception as e:
-                return f"ERROR: Failed writing {path}: {e}. Some edits may have been partially applied!"
-
-        self._changes_made.extend([f"Multi-edited: {p}" for p in applied])
-
-        unique_files = list(set(os.path.basename(p) for p in applied))
-        return (
-            f"✅ Applied {len(edits)} edit(s) across {len(applied)} file(s): "
-            f"{', '.join(unique_files)}"
-        )
-
-    def _diff_preview(self, path, old_string, new_string):
-        """Generate a unified diff preview without applying changes."""
-        path = os.path.expanduser(path)
+        # Recent git history
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                original = f.read()
-        except FileNotFoundError:
-            return f"ERROR: File not found: {path}"
+            r = run_terminal(
+                f"cd '{path}' && git log --oneline -5 2>/dev/null",
+                timeout=5,
+            )
+            log = r.get("content", "").strip()
+            if log:
+                sections.append(f"### Recent Commits\n```\n{log}\n```\n")
 
-        if old_string not in original:
-            return f"ERROR: old_string not found in {path}. Use read_file to check."
+            r = run_terminal(
+                f"cd '{path}' && git status --short 2>/dev/null | head -20",
+                timeout=5,
+            )
+            status = r.get("content", "").strip()
+            if status:
+                sections.append(f"### Git Status\n```\n{status}\n```\n")
+        except Exception:
+            pass
 
-        modified = original.replace(old_string, new_string, 1)
-
-        diff = difflib.unified_diff(
-            original.splitlines(keepends=True),
-            modified.splitlines(keepends=True),
-            fromfile=f"a/{os.path.basename(path)}",
-            tofile=f"b/{os.path.basename(path)}",
-            n=3,
-        )
-        diff_text = "".join(diff)
-
-        if not diff_text:
-            return "No changes detected (old_string and new_string are identical)."
-
-        # Count changes
-        added = sum(1 for line in diff_text.splitlines() if line.startswith("+") and not line.startswith("+++"))
-        removed = sum(1 for line in diff_text.splitlines() if line.startswith("-") and not line.startswith("---"))
-
-        return (
-            f"## Diff Preview: {os.path.basename(path)}\n"
-            f"+{added} lines / -{removed} lines\n\n"
-            f"```diff\n{diff_text}\n```\n\n"
-            f"(This is a PREVIEW — changes have NOT been applied)"
-        )
-
-    # ═══════════════════════════════════════════════════════
-    #  Test-Driven Development Loop
-    # ═══════════════════════════════════════════════════════
-
-    def _test_loop(self, test_command, max_attempts=5, project_path=None):
-        """Run tests, diagnose failures, fix, and re-test automatically."""
-        results_log = []
-        fixes_applied = []
-
-        for attempt in range(1, max_attempts + 1):
-            print(f"    🧪 [Dev Agent] Test attempt {attempt}/{max_attempts}")
-
-            # Run the tests
-            result = run_terminal(test_command, timeout=120)
-            output = result.get("content", str(result))
-            exit_code = result.get("exit_code", -1)
-
-            results_log.append(f"Attempt {attempt}: exit_code={exit_code}")
-
-            # Check if tests passed
-            if exit_code == 0:
-                summary = (
-                    f"✅ All tests passed on attempt {attempt}/{max_attempts}.\n"
-                    f"Command: {test_command}\n"
-                )
-                if fixes_applied:
-                    summary += f"\nFixes applied ({len(fixes_applied)}):\n"
-                    for fix in fixes_applied:
-                        summary += f"  - {fix}\n"
-                summary += f"\nFinal output:\n{output[-2000:]}"
-                return summary
-
-            # Tests failed — return the failure info for the LLM to diagnose
-            if attempt < max_attempts:
-                # Return info so the LLM can fix it in the next step
-                return (
-                    f"❌ Tests FAILED (attempt {attempt}/{max_attempts}).\n"
-                    f"Command: {test_command}\n"
-                    f"Exit code: {exit_code}\n\n"
-                    f"Error output:\n{output[-4000:]}\n\n"
-                    f"Analyze the error, fix the code, then call test_loop again "
-                    f"(remaining attempts: {max_attempts - attempt})."
-                )
-
-        # All attempts exhausted
-        return (
-            f"❌ Tests still failing after {max_attempts} attempts.\n"
-            f"Command: {test_command}\n\n"
-            f"Last output:\n{output[-4000:]}\n\n"  # noqa: F821
-            f"Fixes attempted:\n" + "\n".join(f"  - {f}" for f in fixes_applied)
-        )
-
-    # ═══════════════════════════════════════════════════════
-    #  Code Intelligence
-    # ═══════════════════════════════════════════════════════
-
-    def _find_references(self, symbol, directory, file_types="py,js,ts,jsx,tsx"):
-        """Find all references to a symbol across the project."""
-        directory = os.path.expanduser(directory)
-
-        # Build grep include flags
-        extensions = [ext.strip() for ext in file_types.split(",")]
-        include_flags = " ".join(f"--include='*.{ext}'" for ext in extensions)
-
-        result = run_terminal(
-            f"grep -rn {include_flags} "
-            f"--exclude-dir=node_modules --exclude-dir=.git "
-            f"--exclude-dir=venv --exclude-dir=__pycache__ "
-            f"--exclude-dir=dist --exclude-dir=build "
-            f"'\\b{symbol}\\b' '{directory}' 2>/dev/null | head -60",
-            timeout=15,
-        )
-        output = result.get("content", "").strip()
-
-        if not output:
-            return f"No references to '{symbol}' found in {directory}"
-
-        lines = output.strip().splitlines()
-        return (
-            f"## References to '{symbol}' ({len(lines)} found)\n\n"
-            f"```\n{output}\n```\n\n"
-            f"{'⚠️ Results truncated to 60 matches.' if len(lines) >= 60 else ''}"
-        )
-
-    def _rollback(self, action, file_path=None):
-        """Undo changes using git."""
-        if action == "last_commit":
-            result = run_terminal("git reset --soft HEAD~1", timeout=10)
-            content = result.get("content", str(result))
-            self._changes_made.append("Rolled back last commit")
-            return f"✅ Last commit undone (changes kept staged).\n{content}"
-
-        elif action == "file":
-            if not file_path:
-                return "ERROR: file_path required for action='file'"
-            result = run_terminal(f"git checkout -- '{file_path}'", timeout=10)
-            content = result.get("content", str(result))
-            self._changes_made.append(f"Rolled back: {file_path}")
-            return f"✅ Restored {file_path} to last committed state.\n{content}"
-
-        elif action == "all":
-            result = run_terminal("git checkout -- . && git clean -fd", timeout=10)
-            content = result.get("content", str(result))
-            self._changes_made.append("Rolled back ALL changes")
-            return f"⚠️ ALL uncommitted changes discarded.\n{content}"
-
-        return f"ERROR: Unknown rollback action: {action}"
-
-    # ═══════════════════════════════════════════════════════
-    #  Standard File Tools (shared with coder agent)
-    # ═══════════════════════════════════════════════════════
-
-    def _edit_file(self, path, old_string, new_string):
-        """Surgical string replacement in a file."""
+        # File count
         try:
-            path = os.path.expanduser(path)
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
+            r = run_terminal(
+                f"find '{path}' -type f "
+                f"-not -path '*/.git/*' -not -path '*/node_modules/*' "
+                f"-not -path '*/venv/*' 2>/dev/null | wc -l",
+                timeout=5,
+            )
+            count = r.get("content", "").strip()
+            sections.append(f"Total files: {count}\n")
+        except Exception:
+            pass
 
-            if old_string not in content:
-                return f"ERROR: old_string not found in {path}. Use read_file to see current contents."
-
-            count = content.count(old_string)
-            if count > 1:
-                return (
-                    f"ERROR: old_string found {count} times in {path}. "
-                    f"Make it more specific (include surrounding lines)."
-                )
-
-            new_content = content.replace(old_string, new_string, 1)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_content)
-
-            return f"✅ Edited {path} — replaced {len(old_string)} chars with {len(new_string)} chars"
-        except FileNotFoundError:
-            return f"ERROR: File not found: {path}"
-        except Exception as e:
-            return f"ERROR editing file: {e}"
+        scan = "\n".join(sections)
+        self._project_cache[path] = scan
+        return scan
 
     def _search_files(self, pattern, directory, content_search):
-        """Search files by name or content."""
+        """Search for files by name or content."""
         try:
             directory = os.path.expanduser(directory)
             if content_search:
-                result = run_terminal(
-                    f"grep -rn --include='*.py' --include='*.js' --include='*.ts' "
+                r = run_terminal(
+                    f"grep -rn "
+                    f"--include='*.py' --include='*.js' --include='*.ts' "
                     f"--include='*.tsx' --include='*.jsx' --include='*.html' "
                     f"--include='*.css' --include='*.json' --include='*.yaml' "
-                    f"--include='*.yml' --include='*.md' --include='*.txt' "
-                    f"'{pattern}' '{directory}' 2>/dev/null | head -50",
+                    f"'{pattern}' '{directory}' 2>/dev/null | head -30",
                     timeout=15,
                 )
-                return result.get("content", "(no results)")
+                return r.get("content", "(no results)")
             else:
-                result = run_terminal(
+                r = run_terminal(
                     f"find '{directory}' -name '{pattern}' "
                     f"-not -path '*/node_modules/*' -not -path '*/.git/*' "
-                    f"-not -path '*/venv/*' 2>/dev/null | head -50",
+                    f"-not -path '*/venv/*' "
+                    f"2>/dev/null | head -30",
                     timeout=15,
                 )
-                return result.get("content", "(no results)")
+                return r.get("content", "(no results)")
         except Exception as e:
-            return f"ERROR searching: {e}"
+            return f"ERROR: {e}"
