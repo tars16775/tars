@@ -18,7 +18,10 @@ from agents.agent_tools import (
 )
 from hands.browser import (
     act_google, act_goto, act_read_page, act_read_url, _activate_chrome,
+    _browser_lock, _ensure, _js,
 )
+import time as _time
+import urllib.parse
 
 
 # ─────────────────────────────────────────────
@@ -101,7 +104,12 @@ class ResearchAgent(BaseAgent):
     def _on_start(self, task):
         """Clear notes and activate Chrome for new research task."""
         self._notes = {}
-        _activate_chrome()
+        try:
+            _activate_chrome()
+            _ensure()  # Make sure CDP is connected
+            print(f"  🔍 Research Agent: Chrome ready")
+        except Exception as e:
+            print(f"  ⚠️ Research Agent: Chrome init failed: {e}")
 
     def _dispatch(self, name, inp):
         """Route research tool calls."""
@@ -126,43 +134,53 @@ class ResearchAgent(BaseAgent):
             return f"ERROR: {e}"
 
     def _web_search(self, query):
-        """Quick Google search and return results."""
-        text = act_google(query)
-        if isinstance(text, dict):
-            return text.get("content", str(text))
-        return str(text) if text else "No search results found."
+        """Quick Google search — atomic (holds browser lock for full operation)."""
+        try:
+            with _browser_lock:
+                _ensure()
+                encoded = urllib.parse.quote_plus(query)
+                _js(f"window.location.href='https://www.google.com/search?q={encoded}'")
+                _time.sleep(2)
+                text = _js("document.body ? document.body.innerText.substring(0, 6000) : ''")
+            return f"Google results for '{query}':\n\n{text}" if text else "No search results found."
+        except Exception as e:
+            print(f"  ⚠️ Research web_search error: {e}")
+            return f"ERROR: Search failed: {e}"
 
     def _browse(self, url):
-        """Navigate to URL and read full page content."""
-        act_goto(url)
-        import time
-        time.sleep(2)
-        content = act_read_page()
-        if isinstance(content, dict):
-            text = content.get("content", str(content))
-        else:
-            text = str(content)
-        # Truncate very long pages
-        if len(text) > 15000:
-            text = text[:12000] + "\n\n... [page truncated — use 'extract' for specific info] ..."
-        url_info = act_read_url()
-        url_str = url_info.get("content", url) if isinstance(url_info, dict) else str(url_info)
-        return f"URL: {url_str}\n\n{text}"
+        """Navigate to URL and read — atomic (single lock hold)."""
+        try:
+            with _browser_lock:
+                _ensure()
+                _js(f"window.location.href='{url}'")
+                _time.sleep(2)
+                text = _js("document.body ? document.body.innerText.substring(0, 12000) : ''")
+                current_url = _js("window.location.href") or url
+            if not text:
+                text = "(page content is empty or could not be read)"
+            if len(text) > 12000:
+                text = text[:12000] + "\n\n... [page truncated — use 'extract' for specific info] ..."
+            return f"URL: {current_url}\n\n{text}"
+        except Exception as e:
+            print(f"  ⚠️ Research browse error: {e}")
+            return f"ERROR: Could not browse {url}: {e}"
 
     def _extract(self, url, question):
-        """Navigate to URL and extract specific info."""
-        act_goto(url)
-        import time
-        time.sleep(2)
-        content = act_read_page()
-        if isinstance(content, dict):
-            text = content.get("content", str(content))
-        else:
-            text = str(content)
-        # Return the page content — the LLM will extract the answer
-        if len(text) > 15000:
-            text = text[:12000] + "\n\n... [truncated] ..."
-        return f"Page content for question '{question}':\n\n{text}"
+        """Navigate to URL and extract — atomic (single lock hold)."""
+        try:
+            with _browser_lock:
+                _ensure()
+                _js(f"window.location.href='{url}'")
+                _time.sleep(2)
+                text = _js("document.body ? document.body.innerText.substring(0, 12000) : ''")
+            if not text:
+                text = "(page content is empty or could not be read)"
+            if len(text) > 12000:
+                text = text[:12000] + "\n\n... [truncated] ..."
+            return f"Page content for question '{question}':\n\n{text}"
+        except Exception as e:
+            print(f"  ⚠️ Research extract error: {e}")
+            return f"ERROR: Could not extract from {url}: {e}"
 
     def _note(self, key, value):
         """Save a research finding."""
