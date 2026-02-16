@@ -74,7 +74,7 @@ _TIER2_DOMAINS = {
     "consumer.ftc.gov", "usa.gov",
     "amazon.com", "bestbuy.com", "walmart.com",
     "zillow.com", "realtor.com", "redfin.com",
-    "kayak.com", "google.com", "skyscanner.com", "expedia.com",
+    "google.com",
 }
 
 _TIER3_DOMAINS = {
@@ -576,14 +576,11 @@ RESEARCH_SYSTEM_PROMPT = (
     "- Confidence indicators: high=verified 2+ sources, medium=single source, low=unverified\n\n"
     "## DOMAIN EXPERTISE\n\n"
     "### Travel Research\n"
-    "- For flights: use web_search to find current prices, NOT by constructing direct URLs\n"
-    "- Google Flights: search via web_search 'flights SLC to LAX site:google.com/travel' — do NOT manually build google.com/flights URLs\n"
-    "- Kayak: search 'site:kayak.com flights SLC LAX' to find the right results page\n"
-    "- Skyscanner: search 'site:skyscanner.com SLC LAX' for correct links\n"
+    "- ⚠️ For FLIGHT SEARCHES: DO NOT search Kayak, Skyscanner, or Expedia — they detect bots and serve CAPTCHAs\n"
+    "- Flight searches should use the search_flights tool (handled by TARS brain, not research agent)\n"
+    "- If asked to research flight-related info (baggage policies, airline reviews, airport info), use web_search normally\n"
     "- ALWAYS use the date_calc tool to compute correct future dates before building any date-specific URLs\n"
-    "- Compare: price, airline, stops, duration, departure times\n"
-    "- Note booking class, cancellation policies, luggage\n"
-    "- CRITICAL: Flight search sites use JavaScript heavily — prefer extract over extract_table, and use web_search results over direct browsing\n\n"
+    "- CRITICAL: Flight booking sites use aggressive bot detection — never navigate directly to Kayak/Skyscanner/Expedia\n\n"
     "### Product Research\n"
     "- Check official product pages + 2-3 review sites\n"
     "- Compare: price, specs, user ratings, pros/cons\n"

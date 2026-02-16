@@ -47,8 +47,18 @@ class CDP:
         if tabs:
             page = self._pick_page(tabs)
             if page:
-                self._connect_ws(page["webSocketDebuggerUrl"])
-                return
+                try:
+                    self._connect_ws(page["webSocketDebuggerUrl"])
+                    return
+                except (TimeoutError, RuntimeError) as e:
+                    # Tab might be stuck (e.g., on a heavy travel site)
+                    # Try creating a fresh tab instead
+                    print(f"    ⚠️ Existing tab unresponsive ({e}), creating fresh tab...")
+                    self.close()
+                    fresh = self._create_fresh_tab()
+                    if fresh:
+                        self._connect_ws(fresh["webSocketDebuggerUrl"])
+                        return
 
         # No Chrome with debug port — launch it
         self._launch_chrome()
@@ -90,13 +100,48 @@ class CDP:
         except Exception:
             return None
 
+    def _create_fresh_tab(self):
+        """Create a new blank tab via CDP HTTP API. Returns target dict or None."""
+        try:
+            url = f"http://localhost:{self.port}/json/new?about:blank"
+            req = urllib.request.Request(url, method='PUT')
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        except Exception:
+            try:
+                # Some Chrome versions use GET for /json/new
+                url = f"http://localhost:{self.port}/json/new?about:blank"
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    return json.loads(r.read())
+            except Exception:
+                return None
+
     def _pick_page(self, tabs):
-        """Pick the best page target from target list."""
-        # Prefer first 'page' type target
-        for t in tabs:
-            if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+        """Pick the best page target from target list.
+        
+        Priority: blank/simple tabs > any page tab > any ws target.
+        Avoids picking tabs on heavy travel sites that might be stuck loading.
+        """
+        page_tabs = [t for t in tabs if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+        
+        # Prefer blank/new tabs (least likely to be stuck)
+        for t in page_tabs:
+            url = t.get("url", "")
+            if "about:blank" in url or "chrome://newtab" in url or "chrome-untrusted:" in url:
                 return t
-        # Fallback to anything with a ws URL
+        
+        # Then prefer any simple page over heavy travel sites
+        heavy_sites = ("google.com/travel", "kayak.com", "skyscanner.com", "booking.com", "expedia.com")
+        for t in page_tabs:
+            url = t.get("url", "")
+            if not any(h in url for h in heavy_sites):
+                return t
+        
+        # Fall back to any page tab
+        if page_tabs:
+            return page_tabs[0]
+        
+        # Last resort: anything with a ws URL
         for t in tabs:
             if t.get("webSocketDebuggerUrl"):
                 return t
