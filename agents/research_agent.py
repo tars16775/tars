@@ -559,9 +559,14 @@ RESEARCH_SYSTEM_PROMPT = (
     "- Confidence indicators: high=verified 2+ sources, medium=single source, low=unverified\n\n"
     "## DOMAIN EXPERTISE\n\n"
     "### Travel Research\n"
-    "- Check Google Flights, Kayak, Skyscanner for flights\n"
+    "- For flights: use web_search to find current prices, NOT by constructing direct URLs\n"
+    "- Google Flights: search via web_search 'flights SLC to LAX site:google.com/travel' — do NOT manually build google.com/flights URLs\n"
+    "- Kayak: search 'site:kayak.com flights SLC LAX' to find the right results page\n"
+    "- Skyscanner: search 'site:skyscanner.com SLC LAX' for correct links\n"
+    "- ALWAYS use the date_calc tool to compute correct future dates before building any date-specific URLs\n"
     "- Compare: price, airline, stops, duration, departure times\n"
-    "- Note booking class, cancellation policies, luggage\n\n"
+    "- Note booking class, cancellation policies, luggage\n"
+    "- CRITICAL: Flight search sites use JavaScript heavily — prefer extract over extract_table, and use web_search results over direct browsing\n\n"
     "### Product Research\n"
     "- Check official product pages + 2-3 review sites\n"
     "- Compare: price, specs, user ratings, pros/cons\n"
@@ -621,7 +626,15 @@ class ResearchAgent(BaseAgent):
 
     @property
     def system_prompt(self):
-        return RESEARCH_SYSTEM_PROMPT
+        today = datetime.now().strftime('%Y-%m-%d')
+        year = datetime.now().year
+        return (
+            RESEARCH_SYSTEM_PROMPT +
+            f"\n## CURRENT DATE\n"
+            f"Today is {today}. The current year is {year}.\n"
+            f"ALWAYS use {year} dates (never 2024 or 2025) when constructing URLs or date ranges.\n"
+            f"When searching for flights, events, or time-sensitive data, use dates starting from {today}.\n"
+        )
 
     @property
     def tools(self):
