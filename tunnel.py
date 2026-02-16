@@ -39,33 +39,155 @@ def load_config():
 
 
 class TARSProcessManager:
-    """Manages the tars.py process as a subprocess."""
+    """Manages the tars.py process — both spawned and externally-started.
+
+    Detects any running tars.py process on the system and "adopts" it,
+    so the dashboard/tunnel always shows the real status. Start/stop/kill
+    work regardless of how TARS was launched (tunnel, terminal, menu bar).
+    """
 
     def __init__(self, base_dir: str, on_output=None, on_status_change=None):
         self.base_dir = base_dir
-        self.process: subprocess.Popen = None
+        self.process: subprocess.Popen = None  # Only set if WE spawned it
+        self._adopted_pid: int = None  # PID of externally-started TARS
         self.on_output = on_output  # callback(stream, text)
         self.on_status_change = on_status_change  # callback(status_dict)
         self._reader_threads = []
         self._started_at = None
+        self._scan_lock = threading.Lock()
+
+        # Start a background thread to continuously scan for external TARS
+        self._scanner_running = True
+        self._scanner = threading.Thread(target=self._scan_loop, daemon=True)
+        self._scanner.start()
+
+    # ── Process Detection ──────────────────────────────
+
+    def _find_external_tars_pid(self) -> int:
+        """Find a running tars.py process that we didn't spawn."""
+        try:
+            # pgrep for any process with tars.py in its command line
+            r = subprocess.run(
+                ["pgrep", "-f", "tars\\.py"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                return None
+
+            my_pid = os.getpid()
+            our_child = self.process.pid if self.process and self.process.poll() is None else None
+            parent_pid = os.getppid()
+
+            for line in r.stdout.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    pid = int(line)
+                except ValueError:
+                    continue
+                if pid in (my_pid, our_child, parent_pid):
+                    continue
+                # Verify it's actually tars.py (not tunnel.py, tars_control.py, etc.)
+                try:
+                    cmd_r = subprocess.run(
+                        ["ps", "-ww", "-p", str(pid), "-o", "command="],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    cmd_line = cmd_r.stdout.strip()
+                    if ("tars.py" in cmd_line
+                            and "tunnel" not in cmd_line.lower()
+                            and "tars_control" not in cmd_line.lower()
+                            and "pgrep" not in cmd_line.lower()):
+                        return pid
+                except Exception:
+                    continue
+            return None
+        except Exception:
+            return None
+
+    def _is_pid_alive(self, pid: int) -> bool:
+        """Check if a PID is still running."""
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)  # signal 0 = just check
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _scan_loop(self):
+        """Background scanner: detect external TARS processes appearing/disappearing."""
+        while self._scanner_running:
+            try:
+                self._scan_once()
+            except Exception:
+                pass
+            time.sleep(3)  # Check every 3 seconds
+
+    def _scan_once(self):
+        """Single scan cycle — detect or release adopted processes."""
+        with self._scan_lock:
+            # If we spawned TARS and it's still running, nothing to scan
+            if self.process and self.process.poll() is None:
+                return
+
+            # If we have an adopted PID, check if it's still alive
+            if self._adopted_pid:
+                if not self._is_pid_alive(self._adopted_pid):
+                    old_pid = self._adopted_pid
+                    self._adopted_pid = None
+                    self._started_at = None
+                    self._emit_output("system", f"TARS process (PID {old_pid}) exited")
+                    self._notify_status("stopped")
+                return
+
+            # No tracked TARS — scan for an external one
+            ext_pid = self._find_external_tars_pid()
+            if ext_pid:
+                self._adopted_pid = ext_pid
+                self._started_at = self._started_at or time.time()
+                self._emit_output("system", f"Detected running TARS (PID {ext_pid}) — adopted")
+                self._notify_status("running")
+
+    # ── Properties ──────────────────────────────────────
 
     @property
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        # Our spawned process
+        if self.process is not None and self.process.poll() is None:
+            return True
+        # Externally adopted process
+        if self._adopted_pid and self._is_pid_alive(self._adopted_pid):
+            return True
+        return False
 
     @property
     def pid(self):
-        return self.process.pid if self.process else None
+        if self.process and self.process.poll() is None:
+            return self.process.pid
+        if self._adopted_pid and self._is_pid_alive(self._adopted_pid):
+            return self._adopted_pid
+        return None
 
     def get_status(self) -> dict:
         running = self.is_running
+        mode = "unknown"
+        if running:
+            if self.process and self.process.poll() is None:
+                mode = "managed"  # We spawned it
+            else:
+                mode = "adopted"  # External process we detected
         return {
             "running": running,
             "pid": self.pid,
             "started_at": self._started_at,
             "status": "running" if running else "stopped",
+            "mode": mode,
             "uptime": (time.time() - self._started_at) if self._started_at and running else 0,
         }
+
+    # ── Start ───────────────────────────────────────────
 
     def start(self, task: str = None) -> dict:
         """Start tars.py as a subprocess."""
@@ -95,6 +217,7 @@ class TARSProcessManager:
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             self._started_at = time.time()
+            self._adopted_pid = None  # Clear any adopted PID
 
             # Start reader threads for stdout and stderr
             self._reader_threads = []
@@ -118,52 +241,79 @@ class TARSProcessManager:
             self._emit_output("system", f"Failed to start TARS: {e}")
             return {"success": False, "error": str(e)}
 
+    # ── Stop ────────────────────────────────────────────
+
     def stop(self) -> dict:
-        """Gracefully stop TARS (SIGTERM)."""
+        """Gracefully stop TARS (SIGTERM). Works for both spawned and adopted."""
         if not self.is_running:
             return {"success": False, "error": "TARS is not running"}
 
-        pid = self.process.pid
-        self._emit_output("system", f"Stopping TARS (PID {pid})...")
+        target_pid = self.pid
+        self._emit_output("system", f"Stopping TARS (PID {target_pid})...")
         self._notify_status("stopping")
 
         try:
-            self.process.terminate()
-            # Wait up to 10 seconds for graceful shutdown
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._emit_output("system", "TARS didn't stop gracefully, killing...")
-                self.process.kill()
-                self.process.wait(timeout=5)
+            # If it's our subprocess, use Popen methods
+            if self.process and self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self._emit_output("system", "TARS didn't stop gracefully, killing...")
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+            else:
+                # Adopted process — send SIGTERM directly
+                os.kill(target_pid, signal.SIGTERM)
+                # Wait for it to die
+                for _ in range(20):  # 10 seconds
+                    time.sleep(0.5)
+                    if not self._is_pid_alive(target_pid):
+                        break
+                else:
+                    # Still alive — force kill
+                    self._emit_output("system", "TARS didn't stop gracefully, killing...")
+                    os.kill(target_pid, signal.SIGKILL)
+                    time.sleep(1)
 
             self._started_at = None
+            self._adopted_pid = None
             self._notify_status("stopped")
-            self._emit_output("system", f"TARS stopped (was PID {pid})")
+            self._emit_output("system", f"TARS stopped (was PID {target_pid})")
             return {"success": True}
 
         except Exception as e:
             self._emit_output("system", f"Error stopping TARS: {e}")
             return {"success": False, "error": str(e)}
 
+    # ── Kill ────────────────────────────────────────────
+
     def kill(self) -> dict:
-        """Force kill TARS (SIGKILL)."""
+        """Force kill TARS (SIGKILL). Works for both spawned and adopted."""
         if not self.is_running:
             return {"success": False, "error": "TARS is not running"}
 
-        pid = self.process.pid
-        self._emit_output("system", f"KILLING TARS (PID {pid})!")
+        target_pid = self.pid
+        self._emit_output("system", f"KILLING TARS (PID {target_pid})!")
         self._notify_status("killed")
 
         try:
-            self.process.kill()
-            self.process.wait(timeout=5)
+            if self.process and self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=5)
+            else:
+                os.kill(target_pid, signal.SIGKILL)
+                time.sleep(1)
+
             self._started_at = None
+            self._adopted_pid = None
             self._notify_status("stopped")
-            self._emit_output("system", f"TARS killed (was PID {pid})")
+            self._emit_output("system", f"TARS killed (was PID {target_pid})")
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ── Restart ─────────────────────────────────────────
 
     def restart(self, task: str = None) -> dict:
         """Restart TARS."""
@@ -174,6 +324,8 @@ class TARSProcessManager:
                 self.kill()
             time.sleep(1)
         return self.start(task=task)
+
+    # ── Internal Helpers ────────────────────────────────
 
     def _read_stream(self, stream_name: str, pipe):
         """Read a subprocess output stream line by line."""
