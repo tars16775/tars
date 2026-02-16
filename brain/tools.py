@@ -128,7 +128,7 @@ TARS_TOOLS = [
     },
     {
         "name": "deploy_research_agent",
-        "description": "Deploy Research Agent v2.0 — world-class deep researcher and analyst.\n\n15+ specialized tools: multi_search (2-5 queries at once), deep_read (scroll through 50K+ char pages), extract_table (pricing/specs/schedules), compare (side-by-side tables), follow_links (discover subpages), calculate (math/percentages), convert (unit conversion), date_calc (date arithmetic), research_plan (track progress), score_sources (credibility scoring).\n\nSource credibility scoring: 3-tier domain authority system (80+ trusted domains). Notes with confidence levels (high/medium/low) and source attribution.\n\nREAD-ONLY — cannot interact with websites (no clicking, no form filling, no signups).\nUse for finding info BEFORE deploying other agents.\n\n✅ GOOD: 'Research the cheapest flights from Tampa to NYC in March 2026. Check Google Flights, Kayak, and Skyscanner. Compare top 3 options: airline, price, dates, duration, stops. Include booking URLs.'\n✅ GOOD: 'Compare MacBook Pro vs Dell XPS vs ThinkPad X1. Research specs, prices, reviews from 3+ sources. Build comparison table.'\n❌ BAD: 'Book me a flight' — use browser agent for booking",
+        "description": "Deploy Research Agent v2.0 — world-class deep researcher and analyst.\n\n15+ specialized tools: multi_search (2-5 queries at once), deep_read (scroll through 50K+ char pages), extract_table (pricing/specs/schedules), compare (side-by-side tables), follow_links (discover subpages), calculate (math/percentages), convert (unit conversion), date_calc (date arithmetic), research_plan (track progress), score_sources (credibility scoring).\n\nSource credibility scoring: 3-tier domain authority system (80+ trusted domains). Notes with confidence levels (high/medium/low) and source attribution.\n\nREAD-ONLY — cannot interact with websites (no clicking, no form filling, no signups).\nUse for finding info BEFORE deploying other agents.\n\n✅ GOOD: 'Compare MacBook Pro vs Dell XPS vs ThinkPad X1. Research specs, prices, reviews from 3+ sources. Build comparison table.'\n✅ GOOD: 'Research best noise-cancelling headphones under $300. Check reviews from RTINGS, WireCutter, Reddit.'\n❌ BAD: 'Find me flights' — use search_flights tool directly, NOT research agent\n❌ BAD: 'Book me a flight' — use browser agent for booking",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -310,6 +310,67 @@ TARS_TOOLS = [
                 "query": {"type": "string", "description": "Search query (spotlight action)"}
             },
             "required": ["action"]
+        }
+    },
+
+    # ═══════════════════════════════════════
+    #  Smart Services (API-First, no browser UI)
+    # ═══════════════════════════════════════
+    {
+        "name": "search_flights",
+        "description": "Search for flights using the API-first approach. Constructs Google Flights URLs with all filters encoded — NO browser UI interaction, no clicking, no filters to fight. Just builds the URL, navigates, and reads results.\n\nReturns structured flight data: airline, price, times, duration, stops — sorted by price.\n\nExamples:\n  search_flights(origin='Tampa', destination='New York', depart_date='March 15')\n  search_flights(origin='LAX', destination='London', depart_date='June 1', return_date='June 15', stops='nonstop', cabin='business')\n\nAccepts city names OR airport codes. Dates can be natural language ('March 15') or ISO ('2026-03-15').\n\n⚠️ For flight + Excel + Email in one call, use `search_flights_report` instead.\nFor cheapest date across a month, use `find_cheapest_dates`.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Departure city or airport code (e.g., 'Tampa', 'TPA', 'Los Angeles', 'LAX')"},
+                "destination": {"type": "string", "description": "Arrival city or airport code (e.g., 'New York', 'JFK', 'London', 'LHR')"},
+                "depart_date": {"type": "string", "description": "Departure date: 'March 15', 'Mar 15 2026', '2026-03-15', '3/15'"},
+                "return_date": {"type": "string", "description": "Return date (optional, omit for one-way)"},
+                "passengers": {"type": "integer", "description": "Number of passengers (default 1)", "default": 1},
+                "trip_type": {"type": "string", "enum": ["round_trip", "one_way"], "description": "Trip type", "default": "round_trip"},
+                "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"], "description": "Cabin class", "default": "economy"},
+                "stops": {"type": "string", "enum": ["any", "nonstop", "1stop"], "description": "Stop filter", "default": "any"},
+                "max_price": {"type": "integer", "description": "Maximum price in USD (0 = no limit)", "default": 0}
+            },
+            "required": ["origin", "destination", "depart_date"]
+        }
+    },
+    {
+        "name": "search_flights_report",
+        "description": "Search flights + generate Excel report + email — ALL IN ONE CALL.\n\nDoes everything: searches Google Flights, builds a professional Excel spreadsheet with all flight options (airline, price, times, duration, stops, route), and optionally emails it as an attachment.\n\nUSE THIS when:\n- User asks for flights with a SPECIFIC departure date (and optional return date)\n- User wants a 'full report', 'detailed report', Excel, or email\n- User gives a ROUND-TRIP with two dates like 'Sept 20 - Oct 15' (depart_date=Sept 20, return_date=Oct 15)\n- User says 'search flights from X to Y on DATE' and wants results emailed\n\n⚠️ If user gives TWO dates (e.g., 'Sept 20 - Oct 15'), that means round-trip: depart_date is the FIRST date, return_date is the SECOND date. Do NOT use find_cheapest_dates for this.\n\nExamples:\n  search_flights_report(origin='SLC', destination='Kathmandu', depart_date='September 20', return_date='October 15', email_to='user@gmail.com')\n  search_flights_report(origin='SLC', destination='NYC', depart_date='March 15', email_to='user@gmail.com')\n  search_flights_report(origin='Salt Lake City', destination='Los Angeles', depart_date='this month')\n\nExcel is ALWAYS generated and saved to ~/Documents/TARS_Reports/.\nEmail is sent ONLY if email_to is provided.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Departure city or airport code"},
+                "destination": {"type": "string", "description": "Arrival city or airport code"},
+                "depart_date": {"type": "string", "description": "Departure date (natural language or ISO)"},
+                "return_date": {"type": "string", "description": "Return date (optional)"},
+                "passengers": {"type": "integer", "description": "Number of passengers", "default": 1},
+                "trip_type": {"type": "string", "enum": ["round_trip", "one_way"], "default": "round_trip"},
+                "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"], "default": "economy"},
+                "stops": {"type": "string", "enum": ["any", "nonstop", "1stop"], "default": "any"},
+                "max_price": {"type": "integer", "description": "Max price filter (0 = no limit)", "default": 0},
+                "email_to": {"type": "string", "description": "Email address to send the report to. Leave empty to skip email."}
+            },
+            "required": ["origin", "destination", "depart_date"]
+        }
+    },
+    {
+        "name": "find_cheapest_dates",
+        "description": "Find the cheapest day to fly within a date range — ONLY when user explicitly asks 'when is cheapest' or 'best day to fly'.\n\nScans multiple dates across a range (e.g., all of March), searches each date on Google Flights, ranks by price, and produces a date-vs-price comparison Excel.\n\nUSE THIS ONLY when the user asks:\n- 'When is the cheapest time to fly to NYC?'\n- 'Find the best day to fly SLC to LA in March'\n- 'Cheapest dates for spring break flights'\n\n⚠️ DO NOT USE THIS when user gives specific travel dates like 'Sept 20 - Oct 15'. That's a round-trip → use search_flights_report instead with depart_date + return_date.\n\nExamples:\n  find_cheapest_dates(origin='SLC', destination='LAX', start_date='March 1', end_date='March 31')\n  find_cheapest_dates(origin='Tampa', destination='NYC', start_date='June 1', end_date='June 30', email_to='user@gmail.com')\n\n⚠️ This searches MULTIPLE dates (10-15 searches) so it takes 1-2 minutes. Always warn the user it will take a moment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Departure city or airport code"},
+                "destination": {"type": "string", "description": "Arrival city or airport code"},
+                "start_date": {"type": "string", "description": "Start of date range (e.g., 'March 1', '2026-03-01')"},
+                "end_date": {"type": "string", "description": "End of date range (e.g., 'March 31'). Defaults to +30 days if omitted."},
+                "trip_type": {"type": "string", "enum": ["round_trip", "one_way"], "default": "one_way"},
+                "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"], "default": "economy"},
+                "stops": {"type": "string", "enum": ["any", "nonstop", "1stop"], "default": "any"},
+                "email_to": {"type": "string", "description": "Email address to send the report to. Leave empty to skip email."}
+            },
+            "required": ["origin", "destination", "start_date"]
         }
     },
 
