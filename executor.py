@@ -241,6 +241,8 @@ class ToolExecutor:
             return self._get_tracked_flights(inp)
         elif tool_name == "stop_tracking":
             return self._stop_tracking(inp)
+        elif tool_name == "book_flight":
+            return self._book_flight(inp)
 
         # ─── Report Generation ──
         elif tool_name == "generate_report":
@@ -725,6 +727,27 @@ class ToolExecutor:
             return result
         except Exception as e:
             return {"success": False, "error": True, "content": f"Stop tracking error: {e}"}
+
+    def _book_flight(self, inp):
+        """Handle book_flight — navigate browser to airline booking page."""
+        try:
+            from hands.flight_search import book_flight
+            event_bus.emit("tool_start", {"tool": "book_flight", "input": inp})
+            result = book_flight(
+                origin=inp["origin"],
+                destination=inp["destination"],
+                depart_date=inp["depart_date"],
+                return_date=inp.get("return_date", ""),
+                airline=inp.get("airline", ""),
+                trip_type=inp.get("trip_type", "round_trip"),
+                cabin=inp.get("cabin", "economy"),
+                passengers=inp.get("passengers", 1),
+                flight_number=inp.get("flight_number", 0),
+            )
+            event_bus.emit("tool_end", {"tool": "book_flight", "success": result.get("success")})
+            return result
+        except Exception as e:
+            return {"success": False, "error": True, "content": f"Flight booking error: {e}"}
 
     def _generate_report(self, inp):
         """Handle generate_report brain tool — create Excel/PDF/CSV reports."""

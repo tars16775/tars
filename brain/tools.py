@@ -428,6 +428,25 @@ TARS_TOOLS = [
             "required": ["tracker_id"]
         }
     },
+    {
+        "name": "book_flight",
+        "description": "Book a flight directly! Opens the airline's booking page (or Google Flights) in Chrome via browser automation, selects the flight, and navigates to the checkout page for the user to complete payment.\n\nUSE THIS when user says:\n- 'Book the cheapest flight from SLC to NYC on March 15'\n- 'Book that Delta flight'\n- 'I want to book the $234 United flight'\n- 'Book a flight from Tampa to Tokyo'\n\nWorkflow:\n1. If an airline is specified, opens their direct booking page with route pre-filled\n2. Otherwise, searches Google Flights, selects the best flight, and clicks through to booking\n3. Chrome opens to the airline checkout page\n4. User completes passenger details + payment in the browser\n5. TARS notifies via iMessage that the booking page is ready\n\n⚠️ TARS handles search + navigation. The user completes the final payment step.\n\nExamples:\n  book_flight(origin='SLC', destination='NYC', depart_date='March 15', return_date='March 22')\n  book_flight(origin='Tampa', destination='Tokyo', depart_date='June 1', airline='Delta', cabin='business')\n  book_flight(origin='LAX', destination='London', depart_date='Sept 20', return_date='Oct 5', passengers=2)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "origin": {"type": "string", "description": "Departure city name or airport code (e.g., 'Tampa', 'SLC', 'LAX')"},
+                "destination": {"type": "string", "description": "Arrival city name or airport code (e.g., 'New York', 'NRT', 'LHR')"},
+                "depart_date": {"type": "string", "description": "Departure date in any format: 'March 15', '2026-03-15', 'next Friday'"},
+                "return_date": {"type": "string", "description": "Return date (optional for one-way trips)"},
+                "airline": {"type": "string", "description": "Preferred airline name (optional — picks cheapest if not specified)"},
+                "trip_type": {"type": "string", "enum": ["round_trip", "one_way"], "description": "Trip type (default: round_trip)", "default": "round_trip"},
+                "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"], "description": "Cabin class (default: economy)", "default": "economy"},
+                "passengers": {"type": "integer", "description": "Number of passengers (default: 1)", "default": 1},
+                "flight_number": {"type": "integer", "description": "Index of the flight to book from search results. 0 = cheapest (default)", "default": 0}
+            },
+            "required": ["origin", "destination", "depart_date"]
+        }
+    },
 
     # ═══════════════════════════════════════
     #  Report Generation

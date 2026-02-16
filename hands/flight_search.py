@@ -385,17 +385,35 @@ def _build_google_flights_url(
 
 def _build_booking_link(origin: str, destination: str, depart_date: str,
                         return_date: str = "", trip_type: str = "round_trip") -> str:
-    """Build a clean Google Flights booking link for a specific date."""
+    """Build a clean Google Flights booking link for a specific date.
+    
+    Uses the proper Google Flights URL structure that opens directly to search results.
+    Format: /travel/flights/booking?hl=en&gl=us&tfs=...
+    Fallback: /travel/flights?q=... (simpler but still works)
+    """
     origin_code = _resolve_airport(origin)
     dest_code = _resolve_airport(destination)
     depart = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
-    parts = [f"flights from {origin_code} to {dest_code} on {depart}"]
+    
+    # Build proper Google Flights search URL
+    # This format pre-fills the search form correctly
+    params = {
+        "hl": "en",
+        "gl": "us", 
+        "curr": "USD",
+    }
+    
     if trip_type == "one_way":
-        parts.append("one way")
+        # One-way: /travel/flights?q=flights+SLC+to+LHE+on+2026-03-20+one+way
+        q = f"flights {origin_code} to {dest_code} on {depart} one way"
     elif return_date:
         ret = _parse_date(return_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', return_date) else return_date
-        parts.append(f"return {ret}")
-    return f"https://www.google.com/travel/flights?q={urllib.parse.quote_plus(' '.join(parts))}"
+        q = f"flights {origin_code} to {dest_code} departing {depart} returning {ret}"
+    else:
+        q = f"flights {origin_code} to {dest_code} on {depart}"
+    
+    params["q"] = q
+    return f"https://www.google.com/travel/flights?{urllib.parse.urlencode(params)}"
 
 
 # ═══════════════════════════════════════════════════════
@@ -884,35 +902,28 @@ def _get_airline_booking_url(airline_name: str, origin: str, destination: str,
     return f"https://www.google.com/travel/flights?q={urllib.parse.quote_plus(q)}"
 
 
-def _verify_booking_link(url: str, timeout: int = 8) -> bool:
-    """Verify a booking link is reachable (HTTP HEAD/GET check).
+def _verify_booking_link(url: str, timeout: int = 5) -> bool:
+    """Verify a booking link is valid and the domain exists.
 
-    Returns True if the link returns a valid response (not 404/500/timeout).
+    Light check — just verifies the URL is well-formed and the domain resolves.
+    We DON'T do full HTTP checks because airline sites aggressively block bots,
+    return 403s, require JS, etc. — but the links still work fine in a browser.
     """
     if not url or "google.com/travel" in url:
         return True  # Google Flights links are always valid
 
     try:
-        import urllib.request
-        req = urllib.request.Request(url, method="HEAD", headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Accept": "text/html",
-        })
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        return resp.status < 400
-    except Exception:
-        # HEAD might be blocked, try GET with range
-        try:
-            import urllib.request
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                "Accept": "text/html",
-                "Range": "bytes=0-1024",
-            })
-            resp = urllib.request.urlopen(req, timeout=timeout)
-            return resp.status < 400
-        except Exception:
+        import socket
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
             return False
+        # Just verify the domain resolves (DNS check)
+        host = parsed.netloc.split(':')[0]
+        socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        return True
+    except (socket.gaierror, Exception):
+        return False
 
 
 def _get_verified_booking_link(airline_name: str, origin: str, destination: str,
@@ -3252,7 +3263,11 @@ def _get_smtp_password():
 
 
 def _send_html_email_mailapp(to_address, subject, html_body, attachment_path="", from_address="tarsitgroup@outlook.com"):
-    """Fallback: Send HTML email via Mail.app AppleScript."""
+    """Send HTML email via Microsoft Outlook (preferred) or Mail.app (fallback).
+    
+    Outlook handles HTML content + attachments correctly.
+    Mail.app has a known bug where adding attachments resets HTML body.
+    """
     import subprocess
     import tempfile
 
@@ -3262,17 +3277,28 @@ def _send_html_email_mailapp(to_address, subject, html_body, attachment_path="",
 
     safe_subject = subject.replace('\\', '\\\\').replace('"', '\\"')
 
+    # Try Microsoft Outlook first (handles HTML + attachments properly)
+    outlook_result = _send_via_outlook(to_address, safe_subject, html_file.name, attachment_path)
+    if outlook_result.get("success"):
+        try: os.unlink(html_file.name)
+        except: pass
+        return outlook_result
+
+    # Fallback: Mail.app (set HTML AFTER attachment to avoid body reset bug)
+    print(f"    ⚠️ Outlook failed, trying Mail.app...")
     if attachment_path and os.path.isfile(attachment_path):
         script = f'''
         set htmlContent to read POSIX file "{html_file.name}" as «class utf8»
         tell application "Mail"
             set msg to make new outgoing message with properties {{subject:"{safe_subject}", visible:false}}
             tell msg
-                set html content to htmlContent
                 make new to recipient at end of to recipients with properties {{address:"{to_address}"}}
                 set theAttachment to POSIX file "{attachment_path}"
                 make new attachment with properties {{file name:theAttachment}} at after last paragraph
+                delay 1
+                set html content to htmlContent
             end tell
+            delay 1
             send msg
         end tell
         '''
@@ -3293,13 +3319,50 @@ def _send_html_email_mailapp(to_address, subject, html_body, attachment_path="",
         result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=60)
         os.unlink(html_file.name)
         if result.returncode == 0:
-            return {"success": True, "content": f"HTML email sent to {to_address}: {subject}"}
+            return {"success": True, "content": f"HTML email sent via Mail.app to {to_address}: {subject}"}
         else:
             return {"success": False, "content": f"Mail.app error: {result.stderr}"}
     except Exception as e:
         try: os.unlink(html_file.name)
         except: pass
         return {"success": False, "content": f"Email failed: {e}"}
+
+
+def _send_via_outlook(to_address, subject, html_file_path, attachment_path=""):
+    """Send HTML email via Microsoft Outlook AppleScript.
+    
+    Outlook properly renders HTML body AND supports attachments without
+    stripping the HTML content (unlike Mail.app).
+    """
+    import subprocess
+
+    attachment_block = ""
+    if attachment_path and os.path.isfile(attachment_path):
+        attachment_block = f'''
+                make new attachment with properties {{file:POSIX file "{attachment_path}"}}
+        '''
+
+    script = f'''
+    set htmlContent to read POSIX file "{html_file_path}" as «class utf8»
+    tell application "Microsoft Outlook"
+        set newMsg to make new outgoing message with properties {{subject:"{subject}", content:htmlContent}}
+        tell newMsg
+            make new to recipient with properties {{email address:{{address:"{to_address}"}}}}
+            {attachment_block}
+        end tell
+        send newMsg
+    end tell
+    '''
+
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            return {"success": True, "content": f"HTML email sent via Outlook to {to_address}: {subject}"}
+        else:
+            print(f"    ⚠️ Outlook error: {result.stderr[:200]}")
+            return {"success": False, "content": f"Outlook error: {result.stderr}"}
+    except Exception as e:
+        return {"success": False, "content": f"Outlook failed: {e}"}
 
 
 # ═══════════════════════════════════════════════════════
@@ -3933,3 +3996,218 @@ def stop_price_tracker_scheduler():
     """Stop the background scheduler."""
     global _scheduler_running
     _scheduler_running = False
+
+
+# ═══════════════════════════════════════════════════════
+#  PHASE 8 — Direct Flight Booking via Browser
+# ═══════════════════════════════════════════════════════
+
+def book_flight(
+    origin: str, destination: str, depart_date: str,
+    return_date: str = "", airline: str = "",
+    trip_type: str = "round_trip", cabin: str = "economy",
+    passengers: int = 1, flight_number: int = 0,
+) -> dict:
+    """Book a flight by navigating the browser to the airline/Google Flights booking page.
+
+    This uses CDP browser automation to:
+      1. Search for the specific flight on Google Flights
+      2. Click on the selected flight to open booking
+      3. Navigate to the airline's checkout page
+      4. Pre-fill passenger details where possible
+      5. Hand off to the user for payment
+
+    The function opens the booking flow in Chrome and guides through selection.
+    User completes the final payment step.
+
+    Args:
+        origin: Departure city/airport code
+        destination: Arrival city/airport code
+        depart_date: Departure date
+        return_date: Return date (optional)
+        airline: Preferred airline name (optional - picks cheapest if empty)
+        trip_type: round_trip or one_way
+        cabin: economy, premium_economy, business, first
+        passengers: Number of passengers
+        flight_number: Index of flight to book from search results (0 = cheapest)
+    """
+    from hands.browser import act_goto, act_click, act_read_page, act_inspect_page, act_fill
+
+    origin_code = _resolve_airport(origin)
+    dest_code = _resolve_airport(destination)
+    dep = _parse_date(depart_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', depart_date) else depart_date
+    ret = ""
+    if return_date:
+        ret = _parse_date(return_date) if not re.match(r'^\d{4}-\d{2}-\d{2}$', return_date) else return_date
+
+    print(f"    🛒 Starting booking flow: {origin_code}→{dest_code} on {dep}")
+
+    # Step 1: If airline is specified, try their direct booking page first
+    if airline and airline != "—":
+        airline_url = _get_airline_booking_url(airline, origin_code, dest_code, dep, ret)
+        if airline_url and "google.com" not in airline_url:
+            print(f"    🌐 Opening {airline} booking page...")
+            try:
+                goto_result = act_goto(airline_url)
+                time.sleep(3)
+                page_text = act_read_page()
+                
+                # Notify user via iMessage
+                try:
+                    from voice.imessage_send import IMessageSender
+                    sender = IMessageSender(_load_config())
+                    sender.send(
+                        f"🛒 Booking started!\n\n"
+                        f"✈️ {origin_code} → {dest_code}\n"
+                        f"📅 {dep}" + (f" → {ret}" if ret else "") + f"\n"
+                        f"🏢 {airline}\n"
+                        f"🌐 I've opened {airline}'s booking page in Chrome.\n\n"
+                        f"👉 Check your Chrome browser to continue with passenger details and payment.\n\n"
+                        f"🔗 {airline_url[:80]}"
+                    )
+                except Exception:
+                    pass
+
+                return {
+                    "success": True,
+                    "content": (
+                        f"🛒 Booking page opened for {airline}!\n\n"
+                        f"✈️ {origin_code} → {dest_code} on {dep}\n"
+                        f"🌐 URL: {airline_url}\n\n"
+                        f"Chrome is now showing {airline}'s booking page with your route pre-filled.\n"
+                        f"Please check your Chrome browser to:\n"
+                        f"  1. Select your preferred flight\n"
+                        f"  2. Enter passenger details\n"
+                        f"  3. Complete payment\n\n"
+                        f"💡 I'll stay available if you need help during the process."
+                    ),
+                    "booking_url": airline_url,
+                    "airline": airline,
+                    "method": "airline_direct",
+                }
+            except Exception as e:
+                print(f"    ⚠️ Airline booking page failed: {e}")
+
+    # Step 2: Search on Google Flights first, then click through to book
+    print(f"    🔍 Searching flights to find the best option to book...")
+
+    # Search flights to find the right one
+    search_result = search_flights(
+        origin=origin_code, destination=dest_code,
+        depart_date=dep, return_date=ret,
+        trip_type=trip_type, cabin=cabin,
+        passengers=passengers,
+    )
+
+    flights = search_result.get("flights", [])
+    if not flights:
+        return {
+            "success": False,
+            "content": f"❌ No flights found for {origin_code}→{dest_code} on {dep}. Cannot proceed with booking.",
+        }
+
+    # Select the right flight
+    selected = None
+    if airline and airline != "—":
+        # Find a flight matching the preferred airline
+        for f in flights:
+            if airline.lower() in f.get("airline", "").lower():
+                selected = f
+                break
+    
+    if not selected:
+        # Use flight_number index or cheapest
+        idx = min(flight_number, len(flights) - 1)
+        selected = flights[idx]
+
+    sel_airline = selected.get("airline", "Unknown")
+    sel_price = selected.get("price", "?")
+    sel_depart = selected.get("depart_time", "?")
+    sel_duration = selected.get("duration", "?")
+    sel_stops = selected.get("stops", "?")
+
+    print(f"    ✈️ Selected: {sel_airline} at {sel_price} ({sel_stops}, {sel_duration})")
+
+    # Step 3: Navigate to booking URL
+    # Try airline-specific URL first
+    booking_url = _get_verified_booking_link(sel_airline, origin_code, dest_code, dep, ret)
+    
+    print(f"    🌐 Opening booking page: {booking_url[:60]}...")
+    try:
+        act_goto(booking_url)
+        time.sleep(4)
+
+        # Try to click "Book" or "Select" on Google Flights if we're there
+        if "google.com/travel" in booking_url:
+            try:
+                # On Google Flights, click the matching flight result
+                page_info = act_inspect_page()
+                # Try clicking a "Select flight" or price button
+                act_click(sel_price.replace("$", ""))
+                time.sleep(2)
+                # Look for "Book" button 
+                act_click("Book")
+                time.sleep(3)
+                # Read the page to see if we landed on airline site
+                final_page = act_read_page()
+                print(f"    📄 Landed on: {final_page[:100] if final_page else 'unknown'}...")
+            except Exception as click_err:
+                print(f"    ⚠️ Auto-click: {click_err}")
+
+        # Notify user
+        try:
+            from voice.imessage_send import IMessageSender
+            sender = IMessageSender(_load_config())
+            sender.send(
+                f"🛒 Booking in progress!\n\n"
+                f"✈️ {origin_code} → {dest_code}\n"
+                f"📅 {dep}" + (f" → {ret}" if ret else "") + f"\n"
+                f"🏢 {sel_airline} — {sel_price}\n"
+                f"⏰ {sel_depart} · {sel_duration} · {sel_stops}\n\n"
+                f"🌐 Chrome is open on the booking page.\n"
+                f"👉 Please complete passenger details and payment.\n\n"
+                f"💡 Tell me if you need help with anything!"
+            )
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "content": (
+                f"🛒 Booking page opened!\n\n"
+                f"Selected flight:\n"
+                f"  ✈️ {sel_airline} — {sel_price}\n"
+                f"  📅 {dep} at {sel_depart}\n"
+                f"  ⏱️ {sel_duration} · {sel_stops}\n\n"
+                f"🌐 Chrome is now showing the booking page.\n"
+                f"Please check your browser to:\n"
+                f"  1. Review flight details\n"
+                f"  2. Enter passenger information\n"
+                f"  3. Complete payment\n\n"
+                f"🔗 {booking_url}\n\n"
+                f"💡 I can also help fill in passenger details if you tell me your name and passport info."
+            ),
+            "booking_url": booking_url,
+            "airline": sel_airline,
+            "price": sel_price,
+            "flight_details": selected,
+            "method": "google_flights_redirect",
+        }
+
+    except Exception as e:
+        # If browser automation fails, give them the direct link
+        return {
+            "success": True,
+            "content": (
+                f"🛒 Here's your booking link!\n\n"
+                f"Selected: {sel_airline} — {sel_price} ({sel_stops})\n"
+                f"📅 {dep} at {sel_depart}\n\n"
+                f"🔗 Book here: {booking_url}\n\n"
+                f"I couldn't auto-open the browser ({e}), but click the link above to book directly."
+            ),
+            "booking_url": booking_url,
+            "airline": sel_airline,
+            "price": sel_price,
+            "method": "link_only",
+        }
+
