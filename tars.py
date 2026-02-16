@@ -378,6 +378,9 @@ class _ProgressCollector:
     Subscribes to event_bus for 'agent_started', 'agent_completed', 'tool_called'
     events. Every `interval` seconds, if there's new activity, sends a compact
     progress update via iMessage so the user knows what TARS is doing.
+    
+    Also sends periodic heartbeats during long operations so the user
+    never thinks TARS silently died.
     """
 
     def __init__(self, sender, interval=30):
@@ -387,21 +390,31 @@ class _ProgressCollector:
         self._lock = threading.Lock()
         self._timer = None
         self._running = False
+        self._ticks_without_event = 0
+        self._last_agent = None
+        self._start_time = None
 
     def start(self):
         self._running = True
-        event_bus.subscribe_sync("agent_started", self._on_event)
+        self._start_time = time.time()
+        self._ticks_without_event = 0
+        event_bus.subscribe_sync("agent_started", self._on_agent_start)
         event_bus.subscribe_sync("agent_completed", self._on_event)
         event_bus.subscribe_sync("tool_called", self._on_event)
         self._schedule_tick()
 
     def stop(self):
         self._running = False
-        event_bus.unsubscribe_sync("agent_started", self._on_event)
+        event_bus.unsubscribe_sync("agent_started", self._on_agent_start)
         event_bus.unsubscribe_sync("agent_completed", self._on_event)
         event_bus.unsubscribe_sync("tool_called", self._on_event)
         if self._timer:
             self._timer.cancel()
+
+    def _on_agent_start(self, data):
+        with self._lock:
+            self._events.append(data)
+            self._last_agent = data.get("agent", "agent")
 
     def _on_event(self, data):
         with self._lock:
@@ -422,6 +435,7 @@ class _ProgressCollector:
             self._events.clear()
 
         if events:
+            self._ticks_without_event = 0
             # Build a compact progress summary
             parts = []
             for ev in events[-5:]:  # Last 5 events max
@@ -439,18 +453,83 @@ class _ProgressCollector:
                     self._sender.send(msg)
                 except Exception:
                     pass
+        else:
+            # No events — send heartbeat so user knows we're alive
+            self._ticks_without_event += 1
+            elapsed = int(time.time() - self._start_time) if self._start_time else 0
+            # Send heartbeat every 60s of silence (every 2 ticks at 30s interval)
+            if self._ticks_without_event >= 2 and elapsed > 45:
+                self._ticks_without_event = 0
+                agent_label = self._last_agent or "task"
+                minutes = elapsed // 60
+                try:
+                    self._sender.send(f"⏳ Still working on it... ({agent_label}, {minutes}m elapsed)")
+                except Exception:
+                    pass
 
         self._schedule_tick()
 
 
 # ─── Entry Point ─────────────────────────────────────
 
-if __name__ == "__main__":
-    tars = TARS()
+def _run_with_auto_restart():
+    """Run TARS with automatic crash recovery.
+    
+    If TARS crashes for any reason, waits 5 seconds and restarts.
+    Sends an iMessage notification about the crash and recovery.
+    Max 10 restarts to prevent infinite crash loops.
+    """
+    max_restarts = 10
+    restart_count = 0
 
-    # Check if a task was passed as an argument
-    if len(sys.argv) > 1:
-        task = " ".join(sys.argv[1:])
-        tars.run(initial_task=task)
-    else:
-        tars.run()
+    while restart_count < max_restarts:
+        try:
+            tars = TARS()
+            if len(sys.argv) > 1:
+                task = " ".join(sys.argv[1:])
+                tars.run(initial_task=task)
+            else:
+                tars.run()
+            break  # Clean exit — don't restart
+        except KeyboardInterrupt:
+            print("\n  🛑 TARS stopped by user.")
+            break
+        except SystemExit:
+            break
+        except Exception as e:
+            restart_count += 1
+            print(f"\n  💥 TARS CRASHED: {e}")
+            print(f"  🔄 Auto-restart {restart_count}/{max_restarts} in 5s...\n")
+
+            # Try to notify owner about the crash
+            try:
+                from hands.imessage import iMessageSender
+                import yaml
+                with open("config.yaml") as f:
+                    cfg = yaml.safe_load(f)
+                phone = cfg.get("owner", {}).get("phone", "")
+                if phone:
+                    sender = iMessageSender(phone)
+                    sender.send(f"⚠️ TARS crashed: {str(e)[:150]}. Auto-restarting ({restart_count}/{max_restarts})...")
+            except Exception:
+                pass
+
+            time.sleep(5)
+
+    if restart_count >= max_restarts:
+        print(f"\n  🛑 TARS hit max restarts ({max_restarts}). Stopping.")
+        try:
+            from hands.imessage import iMessageSender
+            import yaml
+            with open("config.yaml") as f:
+                cfg = yaml.safe_load(f)
+            phone = cfg.get("owner", {}).get("phone", "")
+            if phone:
+                sender = iMessageSender(phone)
+                sender.send(f"🛑 TARS has stopped after {max_restarts} crashes. Manual intervention needed.")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    _run_with_auto_restart()

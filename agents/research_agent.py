@@ -642,12 +642,40 @@ class ResearchAgent(BaseAgent):
         self._research_plan = {"questions": [], "completed": []}
         self._search_count = 0
         self._pages_read = 0
+        self._browser_errors = 0
         try:
-            _activate_chrome()
-            _ensure()
+            with _browser_lock:
+                _activate_chrome()
+                _ensure()
             print(f"  Research Agent v2.0: Chrome ready -- {len(self.tools)} tools loaded")
         except Exception as e:
             print(f"  Research Agent: Chrome init failed: {e}")
+
+    def _recover_browser(self):
+        """Attempt to recover from a browser crash/disconnect.
+        
+        Called when a browser operation hits a TimeoutError or connection issue.
+        Kills the dead CDP connection and creates a fresh one.
+        """
+        import hands.browser as _browser_mod
+        self._browser_errors += 1
+        print(f"  🔄 Research Agent: Recovering browser (error #{self._browser_errors})...")
+        try:
+            # Force-kill the old CDP connection
+            if _browser_mod._cdp:
+                try:
+                    _browser_mod._cdp.connected = False
+                except Exception:
+                    pass
+                _browser_mod._cdp = None
+            # Re-init
+            _activate_chrome()
+            _ensure()
+            print(f"  ✅ Browser recovered")
+            return True
+        except Exception as e:
+            print(f"  ❌ Browser recovery failed: {e}")
+            return False
 
     def _dispatch(self, name, inp):
         """Route research tool calls."""
@@ -691,7 +719,7 @@ class ResearchAgent(BaseAgent):
     # -----------------------------------------
 
     def _web_search(self, query, num_results=10):
-        """Google search -- atomic. Parses structured result snippets with trust scores."""
+        """Google search -- atomic. Multi-strategy extraction with fallback."""
         self._search_count += 1
         try:
             with _browser_lock:
@@ -699,52 +727,103 @@ class ResearchAgent(BaseAgent):
                 encoded = urllib.parse.quote_plus(query)
                 num = min(num_results, 30)
                 _js(f"window.location.href='https://www.google.com/search?q={encoded}&num={num}'")
-                _time.sleep(2.5)
+                _time.sleep(3)
 
-                results_js = (
-                    "(function() {"
-                    "var results = [];"
-                    "var items = document.querySelectorAll('div.g');"
-                    "items.forEach(function(item, idx) {"
-                    "var link = item.querySelector('a');"
-                    "var title = item.querySelector('h3');"
-                    "var snippet = item.querySelector('[data-sncf], .VwiC3b, [style*=\"-webkit-line-clamp\"]');"
-                    "if (link && title) {"
-                    "results.push({"
-                    "rank: idx + 1,"
-                    "title: title.innerText || '',"
-                    "url: link.href || '',"
-                    "snippet: snippet ? snippet.innerText : ''"
-                    "});"
-                    "}"
-                    "});"
-                    "var featured = document.querySelector('.hgKElc, .IZ6rdc');"
-                    "var featuredText = featured ? featured.innerText : '';"
-                    "var paa = [];"
-                    "document.querySelectorAll('[data-sgrd] .dnXCYb, .related-question-pair').forEach(function(q) {"
-                    "paa.push(q.innerText || '');"
-                    "});"
-                    "return JSON.stringify({"
-                    "results: results.slice(0, " + str(num) + "),"
-                    "featured_snippet: featuredText.substring(0, 500),"
-                    "people_also_ask: paa.slice(0, 5)"
-                    "});"
-                    "})()"
-                )
+                # Strategy 1: Multiple CSS selectors (Google changes these frequently)
+                results_js = r"""(function() {
+                    var results = [];
+                    var seen = {};
+
+                    // Strategy 1: div.g (classic)
+                    document.querySelectorAll('div.g').forEach(function(item) {
+                        var link = item.querySelector('a[href^="http"]');
+                        var title = item.querySelector('h3');
+                        if (link && title && !seen[link.href]) {
+                            seen[link.href] = true;
+                            var snippet = item.querySelector('[data-sncf], .VwiC3b, [style*="-webkit-line-clamp"], .lEBKkf, span.aCOpRe, .IsZvec');
+                            results.push({title: title.innerText, url: link.href, snippet: snippet ? snippet.innerText : ''});
+                        }
+                    });
+
+                    // Strategy 2: h3 > ancestor with link (catches new layouts)
+                    if (results.length === 0) {
+                        document.querySelectorAll('h3').forEach(function(h3) {
+                            var parent = h3.closest('a') || h3.parentElement;
+                            if (!parent) return;
+                            var link = parent.tagName === 'A' ? parent : parent.querySelector('a[href^="http"]');
+                            if (!link) { var p = parent.parentElement; if (p) link = p.querySelector('a[href^="http"]'); }
+                            if (link && link.href && !seen[link.href] && !link.href.includes('google.com/search')) {
+                                seen[link.href] = true;
+                                var container = h3.closest('[data-sokoban], [data-hveid], [data-ved]') || h3.parentElement.parentElement;
+                                var snippetEl = container ? container.querySelector('[data-sncf], .VwiC3b, [style*="-webkit-line-clamp"], .lEBKkf, span, div:not(:first-child)') : null;
+                                var snipText = '';
+                                if (snippetEl && snippetEl !== h3 && snippetEl.innerText !== h3.innerText) snipText = snippetEl.innerText;
+                                results.push({title: h3.innerText, url: link.href, snippet: snipText.substring(0, 300)});
+                            }
+                        });
+                    }
+
+                    // Strategy 3: Any link with h3 descendant
+                    if (results.length === 0) {
+                        document.querySelectorAll('a[href^="http"]').forEach(function(a) {
+                            var h3 = a.querySelector('h3');
+                            if (h3 && !seen[a.href] && !a.href.includes('google.com')) {
+                                seen[a.href] = true;
+                                results.push({title: h3.innerText, url: a.href, snippet: ''});
+                            }
+                        });
+                    }
+
+                    // Featured snippet
+                    var featured = document.querySelector('.hgKElc, .IZ6rdc, .kno-rdesc span, [data-attrid="description"] span, .xpdopen .LGOjhe');
+                    var featuredText = featured ? featured.innerText.substring(0, 500) : '';
+
+                    // People Also Ask
+                    var paa = [];
+                    document.querySelectorAll('[data-sgrd] .dnXCYb, .related-question-pair, [jsname="Cpkphb"]').forEach(function(q) {
+                        paa.push(q.innerText || '');
+                    });
+
+                    return JSON.stringify({
+                        results: results.slice(0, """ + str(num) + r"""),
+                        featured_snippet: featuredText,
+                        people_also_ask: paa.slice(0, 5),
+                        strategy_used: results.length > 0 ? 'structured' : 'none'
+                    });
+                })()"""
                 raw = _js(results_js)
 
-            try:
-                data = json.loads(raw) if raw else {}
-            except (json.JSONDecodeError, TypeError):
-                with _browser_lock:
-                    text = _js("document.body ? document.body.innerText.substring(0, 8000) : ''")
-                return f"Google results for '{query}':\n\n{text}" if text else "No results found."
+                # Strategy 4 (fallback): If structured parsing failed, grab raw text
+                structured_failed = False
+                try:
+                    data = json.loads(raw) if raw else {}
+                except (json.JSONDecodeError, TypeError):
+                    data = {}
+                    structured_failed = True
 
-            results = data.get("results", [])
+                results = data.get("results", [])
+
+                if not results and not structured_failed:
+                    structured_failed = True
+
+                # If no structured results, extract raw page text as fallback
+                fallback_text = ""
+                if structured_failed or len(results) == 0:
+                    fallback_text = _js(
+                        "(function() {"
+                        "  var el = document.querySelector('#search, #rso, #main');"
+                        "  if (el) return el.innerText.substring(0, 10000);"
+                        "  return document.body ? document.body.innerText.substring(0, 10000) : '';"
+                        "})()"
+                    ) or ""
+
+            # Build response
             featured = data.get("featured_snippet", "")
             paa = data.get("people_also_ask", [])
 
-            for r in results:
+            # Score results
+            for i, r in enumerate(results):
+                r["rank"] = i + 1
                 score = _score_source(r.get("url", ""), r.get("title", ""), r.get("snippet", ""))
                 r["trust_score"] = score
                 self._sources_visited.append((r.get("url", ""), r.get("title", ""), score))
@@ -767,11 +846,24 @@ class ResearchAgent(BaseAgent):
                 for q in paa[:5]:
                     lines.append(f"  - {q}")
 
+            # If structured parsing failed, append raw text so agent still gets info
+            if len(results) == 0 and fallback_text:
+                lines.append("### Raw Search Results (structured parsing unavailable)")
+                lines.append(fallback_text[:8000])
+
             lines.append(f"\nSearch #{self._search_count} | {len(results)} results scored")
             return "\n".join(lines)
 
+        except TimeoutError as e:
+            print(f"  Research web_search timeout: {e}")
+            with _browser_lock:
+                self._recover_browser()
+            return f"ERROR: Search timed out (browser recovered). Try again: {e}"
         except Exception as e:
             print(f"  Research web_search error: {e}")
+            if "Not connected" in str(e) or "timeout" in str(e).lower():
+                with _browser_lock:
+                    self._recover_browser()
             return f"ERROR: Search failed: {e}"
 
     def _multi_search(self, queries):
@@ -824,8 +916,16 @@ class ResearchAgent(BaseAgent):
 
             return header + text
 
+        except TimeoutError as e:
+            print(f"  Research browse timeout: {e}")
+            with _browser_lock:
+                self._recover_browser()
+            return f"ERROR: Browser timed out loading {url} (recovered). Try a different URL."
         except Exception as e:
             print(f"  Research browse error: {e}")
+            if "Not connected" in str(e) or "timeout" in str(e).lower():
+                with _browser_lock:
+                    self._recover_browser()
             return f"ERROR: Could not browse {url}: {e}"
 
     def _deep_read(self, url, max_scrolls=5):
@@ -890,8 +990,16 @@ class ResearchAgent(BaseAgent):
             )
             return header + full_text
 
+        except TimeoutError as e:
+            print(f"  Research deep_read timeout: {e}")
+            with _browser_lock:
+                self._recover_browser()
+            return f"ERROR: Deep read timed out on {url} (recovered). Try browse() instead."
         except Exception as e:
             print(f"  Research deep_read error: {e}")
+            if "Not connected" in str(e) or "timeout" in str(e).lower():
+                with _browser_lock:
+                    self._recover_browser()
             return f"ERROR: Could not deep-read {url}: {e}"
 
     # -----------------------------------------
@@ -932,8 +1040,16 @@ class ResearchAgent(BaseAgent):
                 f"Page content:\n{text[:15000]}"
             )
 
+        except TimeoutError as e:
+            print(f"  Research extract timeout: {e}")
+            with _browser_lock:
+                self._recover_browser()
+            return f"ERROR: Extract timed out on {url} (recovered). Try again."
         except Exception as e:
             print(f"  Research extract error: {e}")
+            if "Not connected" in str(e) or "timeout" in str(e).lower():
+                with _browser_lock:
+                    self._recover_browser()
             return f"ERROR: Could not extract from {url}: {e}"
 
     def _extract_table(self, url, table_description):
@@ -1024,8 +1140,16 @@ class ResearchAgent(BaseAgent):
 
             return "\n".join(lines)
 
+        except TimeoutError as e:
+            print(f"  Research extract_table timeout: {e}")
+            with _browser_lock:
+                self._recover_browser()
+            return f"ERROR: Table extract timed out on {url} (recovered). Try again."
         except Exception as e:
             print(f"  Research extract_table error: {e}")
+            if "Not connected" in str(e) or "timeout" in str(e).lower():
+                with _browser_lock:
+                    self._recover_browser()
             return f"ERROR: Could not extract tables from {url}: {e}"
 
     # -----------------------------------------
@@ -1117,8 +1241,16 @@ class ResearchAgent(BaseAgent):
 
             return "\n".join(results)
 
+        except TimeoutError as e:
+            print(f"  Research follow_links timeout: {e}")
+            with _browser_lock:
+                self._recover_browser()
+            return f"ERROR: Follow links timed out on {url} (recovered). Try again."
         except Exception as e:
             print(f"  Research follow_links error: {e}")
+            if "Not connected" in str(e) or "timeout" in str(e).lower():
+                with _browser_lock:
+                    self._recover_browser()
             return f"ERROR: Could not follow links on {url}: {e}"
 
     # -----------------------------------------
